@@ -16,7 +16,8 @@ def main():
     parser = argparse.ArgumentParser(description="Meetly AI 2026 TableQA Runner")
     parser.add_argument("--xlsx_dir", type=str, default="data/data_public_1/xlsx_files", help="Path to directory containing .xlsx files")
     parser.add_argument("--queries", type=str, default="data/data_public_1/queries.json", help="Path to queries.json")
-    parser.add_argument("--model", type=str, default=None, help="OpenRouter model ID (e.g. qwen/qwen-2.5-coder-32b-instruct:free)")
+    parser.add_argument("--model", type=str, default=None, help="LLM model ID")
+    parser.add_argument("--provider", type=str, default=None, choices=["openrouter", "groq"], help="LLM Provider (groq or openrouter)")
     parser.add_argument("--output", type=str, default="submission.csv", help="Path to output submission.csv")
     parser.add_argument("--eval", action="store_true", help="Compare output against ground truth in sample_submission.csv")
     args = parser.parse_args()
@@ -68,7 +69,11 @@ User Question: {query_text}
 
 Write a python function `def solve(dfs: dict[str, pd.DataFrame]) -> Any:` to compute and return the answer.
 """
-            kwargs = {"model": args.model} if args.model else {}
+            kwargs = {}
+            if args.model:
+                kwargs["model"] = args.model
+            if args.provider:
+                kwargs["provider"] = args.provider
             code = query_qwen(prompt, **kwargs)
             raw_ans, err = execute_code_safely(code, dfs)
 

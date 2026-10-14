@@ -73,23 +73,46 @@ def execute_code_safely(code: str, dfs: Dict[str, pd.DataFrame]) -> Tuple[Any, O
         return None, err_msg
 
 
-def query_qwen(
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_DEFAULT_MODEL = "llama-3.3-70b-versatile"
+
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+DEFAULT_MODEL = os.getenv("MODEL_ID", "qwen/qwen3.7-flash")
+
+
+def query_llm(
     prompt: str,
     api_key: Optional[str] = None,
-    model: str = DEFAULT_MODEL,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
     temperature: float = 0.0,
 ) -> str:
-    """Sends a chat completion request to Qwen via OpenRouter."""
-    key = api_key or os.getenv("OPENROUTER_API_KEY", "")
-    if not key:
-        raise ValueError("OPENROUTER_API_KEY environment variable is not set.")
+    """Unified LLM caller supporting both OpenRouter (competition default) and Groq (free development)."""
+    groq_key = os.getenv("GROQ_API_KEY", "")
+    openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
+
+    # Auto-detect or select provider
+    if provider == "groq" or (provider is None and groq_key):
+        target_provider = "groq"
+        url = GROQ_URL
+        key = api_key or groq_key
+        target_model = model or os.getenv("MODEL_ID") or GROQ_DEFAULT_MODEL
+        if not key:
+            raise ValueError("GROQ_API_KEY is not set.")
+    else:
+        target_provider = "openrouter"
+        url = OPENROUTER_URL
+        key = api_key or openrouter_key
+        target_model = model or os.getenv("MODEL_ID") or DEFAULT_MODEL
+        if not key:
+            raise ValueError("OPENROUTER_API_KEY is not set.")
 
     headers = {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
     }
     payload = {
-        "model": model,
+        "model": target_model,
         "temperature": temperature,
         "messages": [
             {"role": "system", "content": build_system_prompt()},
@@ -99,10 +122,10 @@ def query_qwen(
 
     for attempt in range(4):
         try:
-            resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=60)
+            resp = requests.post(url, headers=headers, json=payload, timeout=60)
             if resp.status_code == 429:
                 wait_time = 3 * (attempt + 1)
-                print(f"[RateLimit] 429 received, waiting {wait_time}s before retry...")
+                print(f"[{target_provider.upper()} RateLimit] 429 received, waiting {wait_time}s before retry...")
                 import time
                 time.sleep(wait_time)
                 continue
@@ -115,3 +138,7 @@ def query_qwen(
                 time.sleep(2 * (attempt + 1))
             else:
                 raise
+
+
+# Backward compatible alias
+query_qwen = query_llm
