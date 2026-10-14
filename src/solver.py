@@ -31,8 +31,11 @@ Rules:
 2. Do NOT hallucinate data; write precise pandas/numpy/python code to calculate the exact answer.
 3. Handle missing values, clean strings (strip whitespace, newlines '\\n', remove footnotes like (1) or 2/ using regex e.g. `re.sub(r'\\(\\d+\\)', '', str(val)).strip()`).
 4. Unit convention: Do NOT scale or multiply numbers by thousands. If table numbers are 265 under '[In thousands]', return 265 directly as the integer, do NOT multiply by 1000 unless explicitly requested.
-5. In pandas, use `df.iloc[:, 0].astype(str).str.lower().str.strip()` or fuzzy/partial matching to locate row labels accurately.
-6. Provide code enclosed in ```python ... ``` blocks.
+5. In pandas, use `df.iloc[:, 0].astype(str).str.lower().str.strip()` or regex/partial matching to locate row labels accurately, ignoring footnote markers like (1) or (2).
+6. Summary rows: When finding min, max, ranking, or calculating proportions among categories/industries/hours, EXCLUDE summary or 'Total' rows (e.g. 'Total, persons at work', 'Total', 'All industries').
+7. Age calculation: In tables with both Date of Birth and Date of Admission, calculate person's age as (Admission date - Birth date).
+8. Candidate names: When candidate names are listed in the question (e.g. 'Agriculture, Manufacturing, and Construction'), return exactly those requested names.
+9. Provide code enclosed in ```python ... ``` blocks.
 """
 
 

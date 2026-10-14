@@ -20,6 +20,16 @@ def load_normalized_workbook(file_path: str | Path) -> Dict[str, pd.DataFrame]:
     return sheets_data
 
 
+import re
+
+def clean_cell_value(val: Any) -> Any:
+    if isinstance(val, str):
+        val = re.sub(r'-\s*\n\s*', '', val)
+        val = re.sub(r'\s*\n\s*', ' ', val)
+        val = re.sub(r'\s+', ' ', val).strip()
+    return val
+
+
 def normalize_worksheet(ws: openpyxl.worksheet.worksheet.Worksheet) -> Optional[pd.DataFrame]:
     """Converts a single openpyxl worksheet into a cleanly structured pandas DataFrame with unmerged cells."""
     if ws.max_row is None or ws.max_column is None:
@@ -32,7 +42,8 @@ def normalize_worksheet(ws: openpyxl.worksheet.worksheet.Worksheet) -> Optional[
 
     for r in range(1, max_r + 1):
         for c in range(1, max_c + 1):
-            grid[r - 1][c - 1] = ws.cell(r, c).value
+            val = ws.cell(r, c).value
+            grid[r - 1][c - 1] = clean_cell_value(val)
 
     # Step 2: Propagate merged cell values across the entire merged range
     for merged_range in list(ws.merged_cells.ranges):

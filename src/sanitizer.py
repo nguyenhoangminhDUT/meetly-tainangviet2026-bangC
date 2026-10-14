@@ -65,6 +65,28 @@ def sanitize_answer(raw_answer: Any, query: str = "") -> str:
             except ValueError:
                 pass
 
+    # Clean newlines and superfluous whitespace
+    text = " ".join(text.split())
+
+    # Case 5: Ranking or listing candidate categories mentioned in query
+    if "rank the following" in q_lower or ("descending order" in q_lower and ":" in query):
+        m = re.search(r":\s*([^.]+)", query)
+        if m:
+            raw_cands = m.group(1).replace("and ", "").split(",")
+            cands = [c.strip() for c in raw_cands if c.strip()]
+            items = [it.strip() for it in text.split(",")]
+            mapped_items = []
+            for it in items:
+                matched = False
+                for c in cands:
+                    if c.lower() in it.lower():
+                        mapped_items.append(c)
+                        matched = True
+                        break
+                if not matched:
+                    mapped_items.append(it)
+            text = ", ".join(mapped_items)
+
     # Clean superfluous trailing periods or quotes
     text = text.strip('"\' ')
     return text
