@@ -60,4 +60,63 @@ def normalize_worksheet(ws: openpyxl.worksheet.worksheet.Worksheet) -> Optional[
         return None
 
     raw_df.reset_index(drop=True, inplace=True)
-    return raw_df
+    return clean_and_headerize(raw_df)
+
+
+def clean_and_headerize(df: pd.DataFrame) -> pd.DataFrame:
+    """Removes metadata rows, merges multi-level headers into column names, and propagates section headers."""
+    # Step 1: Strip metadata prefix rows
+    start = 0
+    for r in range(min(5, len(df))):
+        s_val = ' '.join(str(x) for x in df.iloc[r] if str(x) != 'nan')
+        if any(k in s_val for k in ['HOUSEHOLD DATA', '[In thousands]', '[Numbers in thousands]']):
+            start = r + 1
+    sub_df = df.iloc[start:].reset_index(drop=True)
+
+    # Step 2: Detect first actual data row
+    first_data = 1
+    for r in range(min(7, len(sub_df))):
+        row_vals = sub_df.iloc[r]
+        nums = []
+        for x in row_vals:
+            s_num = str(x).strip()
+            if re.match(r'^-?\d+(\.\d+)?$', s_num):
+                nums.append(float(s_num))
+        # Header rows may contain years (1900-2100) or units; data rows contain actual values
+        non_year_nums = [n for n in nums if n < 1900 or n > 2100]
+        if len(non_year_nums) >= 2:
+            first_data = r
+            break
+
+    # Step 3: Combine hierarchical headers into composite column names
+    cols = []
+    for c in range(sub_df.shape[1]):
+        parts = []
+        for hr in range(first_data):
+            v = str(sub_df.iloc[hr, c]).strip()
+            if v and v != 'nan' and v != 'None' and v not in parts:
+                parts.append(v)
+        cols.append(' | '.join(parts) if parts else f'Col_{c}')
+
+    data_df = sub_df.iloc[first_data:].reset_index(drop=True)
+    data_df.columns = cols
+    data_df = data_df.dropna(how="all")
+
+    # Step 4: Propagate section headers in column 0
+    current_section = ''
+    clean_rows = []
+    for idx in range(len(data_df)):
+        row = data_df.iloc[idx].copy()
+        val0 = str(row.iloc[0]).strip()
+        other_vals = [x for x in row.iloc[1:] if pd.notna(x) and str(x).strip() not in ['', 'nan', 'None']]
+        # Section header row has non-empty col 0 but no other column values
+        if len(other_vals) == 0 and val0 not in ['', 'nan', 'None'] and not any(k in val0 for k in ['Footnotes:', 'NOTE:']):
+            current_section = val0
+        else:
+            if current_section and not val0.startswith(current_section) and not any(k in val0 for k in ['Footnotes:', 'NOTE:']):
+                row.iloc[0] = f'{current_section} | {val0}'
+            clean_rows.append(row)
+
+    if clean_rows:
+        return pd.DataFrame(clean_rows).reset_index(drop=True)
+    return data_df

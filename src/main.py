@@ -55,11 +55,15 @@ def main():
         print(f"Q: {query_text}")
         try:
             dfs = load_normalized_workbook(excel_path)
-            # Create schema summary for prompt (12 rows to cover multi-level headers and sample data)
+            # Create compact, high-information schema summary
             schema_summary = []
             for sname, df in dfs.items():
-                head_str = df.head(12).to_string()
-                schema_summary.append(f"Sheet: '{sname}' (Shape: {df.shape})\nFirst 12 rows:\n{head_str}")
+                info = [f"Sheet '{sname}' ({df.shape[0]} rows, {df.shape[1]} cols):"]
+                info.append(f"Columns: {list(df.columns)}")
+                # Unique row labels from col 0 to help model match exact strings
+                u_labels = [str(x) for x in df.iloc[:, 0].dropna().unique() if str(x) != 'nan'][:25]
+                info.append(f"Row categories (col 0): {u_labels}")
+                schema_summary.append("\n".join(info))
 
             prompt = f"""File: {file_name}
 Sheets data overview:
@@ -84,6 +88,7 @@ Write a python function `def solve(dfs: dict[str, pd.DataFrame]) -> Any:` to com
                 last_err_line = err.strip().splitlines()[-1] if err.strip() else err
                 print(f"Execution error (attempt {retries}): {last_err_line}")
                 print(f"Triggering Self-Correction Reflection (attempt {retries})...")
+                short_err = "\n".join(err.strip().splitlines()[-4:])
                 reflection_prompt = f"""File: {file_name}
 Sheets data overview:
 {chr(10).join(schema_summary)}
@@ -91,7 +96,7 @@ Sheets data overview:
 User Question: {query_text}
 
 Your previous code produced this error:
-{err}
+{short_err}
 
 Please fix the error and write a correct python function `def solve(dfs: dict[str, pd.DataFrame]) -> Any:`
 """
@@ -117,7 +122,7 @@ Please fix the error and write a correct python function `def solve(dfs: dict[st
 
         results.append({"id": q_id, "answer": final_ans})
         import time
-        time.sleep(1.5)
+        time.sleep(3.5)
 
     out_df = pd.DataFrame(results)
     out_df.to_csv(output_path, index=False)
