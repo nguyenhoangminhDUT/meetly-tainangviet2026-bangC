@@ -13,6 +13,10 @@ olympic_text.txt
 vkv_text.txt
 *.tmp
 *.log
+submission.csv
+
+# Environment variables
+.env
 
 # OS generated files
 .DS_Store

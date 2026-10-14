@@ -3,14 +3,22 @@
 import os
 import re
 import sys
+import math
+import datetime
 import traceback
 from typing import Any, Dict, Optional, Tuple
 import requests
 import pandas as pd
+import numpy as np
+from dotenv import load_dotenv
 
+from typing import Any, List, Dict, Tuple, Optional, Union
+import typing
+
+load_dotenv()
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = "qwen/qwen3.7-flash"
+DEFAULT_MODEL = os.getenv("MODEL_ID", "nvidia/nemotron-3-super-120b-a12b:free")
 
 
 def build_system_prompt() -> str:
@@ -21,9 +29,10 @@ The input `dfs` is a dictionary where keys are sheet names and values are pandas
 Rules:
 1. Return ONLY the final computed value (string, integer, float, etc.).
 2. Do NOT hallucinate data; write precise pandas/numpy/python code to calculate the exact answer.
-3. Handle missing values, clean strings (strip whitespace, remove footnotes like (1) or 2/ if needed).
-4. Remove commas from number strings before converting to int/float if necessary.
-5. Provide code enclosed in ```python ... ``` blocks.
+3. Handle missing values, clean strings (strip whitespace, newlines '\\n', remove footnotes like (1) or 2/ using regex e.g. `re.sub(r'\\(\\d+\\)', '', str(val)).strip()`).
+4. Unit convention: Do NOT scale or multiply numbers by thousands. If table numbers are 265 under '[In thousands]', return 265 directly as the integer, do NOT multiply by 1000 unless explicitly requested.
+5. In pandas, use `df.iloc[:, 0].astype(str).str.lower().str.strip()` or fuzzy/partial matching to locate row labels accurately.
+6. Provide code enclosed in ```python ... ``` blocks.
 """
 
 
@@ -36,8 +45,18 @@ def execute_code_safely(code: str, dfs: Dict[str, pd.DataFrame]) -> Tuple[Any, O
     local_vars: Dict[str, Any] = {}
     global_vars: Dict[str, Any] = {
         "pd": pd,
+        "np": np,
         "dfs": dfs,
         "re": re,
+        "math": math,
+        "datetime": datetime,
+        "Any": Any,
+        "List": List,
+        "Dict": Dict,
+        "Tuple": Tuple,
+        "Optional": Optional,
+        "Union": Union,
+        "typing": typing,
     }
 
     try:
@@ -75,7 +94,21 @@ def query_qwen(
         ],
     }
 
-    resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=60)
-    resp.raise_for_status()
-    data = resp.json()
-    return data["choices"][0]["message"]["content"]
+    for attempt in range(4):
+        try:
+            resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=60)
+            if resp.status_code == 429:
+                wait_time = 3 * (attempt + 1)
+                print(f"[RateLimit] 429 received, waiting {wait_time}s before retry...")
+                import time
+                time.sleep(wait_time)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+        except Exception as e:
+            if attempt < 3:
+                import time
+                time.sleep(2 * (attempt + 1))
+            else:
+                raise

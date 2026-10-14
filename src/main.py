@@ -16,7 +16,9 @@ def main():
     parser = argparse.ArgumentParser(description="Meetly AI 2026 TableQA Runner")
     parser.add_argument("--xlsx_dir", type=str, default="data/data_public_1/xlsx_files", help="Path to directory containing .xlsx files")
     parser.add_argument("--queries", type=str, default="data/data_public_1/queries.json", help="Path to queries.json")
+    parser.add_argument("--model", type=str, default=None, help="OpenRouter model ID (e.g. qwen/qwen-2.5-coder-32b-instruct:free)")
     parser.add_argument("--output", type=str, default="submission.csv", help="Path to output submission.csv")
+    parser.add_argument("--eval", action="store_true", help="Compare output against ground truth in sample_submission.csv")
     args = parser.parse_args()
 
     xlsx_dir = Path(args.xlsx_dir)
@@ -30,23 +32,33 @@ def main():
     with open(queries_path, "r", encoding="utf-8") as f:
         queries = json.load(f)
 
-    results = []
-    print(f"Loaded {len(queries)} queries. Processing...")
+    # Load ground truth if evaluating
+    gt_map = {}
+    if args.eval:
+        gt_path = queries_path.parent / "sample_submission.csv"
+        if gt_path.exists():
+            gt_df = pd.read_csv(gt_path)
+            gt_map = dict(zip(gt_df["id"].astype(str), gt_df["answer"].astype(str)))
 
+    results = []
+    print(f"Loaded {len(queries)} queries. Processing with model: {args.model or 'default'}...")
+
+    correct_count = 0
     for item in queries:
-        q_id = item["id"]
+        q_id = str(item["id"])
         file_name = item["file_name"]
         query_text = item["query"]
         excel_path = xlsx_dir / file_name
 
-        print(f"Processing query {q_id} on {file_name}...")
+        print(f"\n--- [{q_id}] ({file_name}) ---")
+        print(f"Q: {query_text}")
         try:
             dfs = load_normalized_workbook(excel_path)
-            # Create schema summary for prompt
+            # Create schema summary for prompt (12 rows to cover multi-level headers and sample data)
             schema_summary = []
             for sname, df in dfs.items():
-                head_str = df.head(5).to_string()
-                schema_summary.append(f"Sheet: '{sname}' (Shape: {df.shape})\nFirst 5 rows:\n{head_str}")
+                head_str = df.head(12).to_string()
+                schema_summary.append(f"Sheet: '{sname}' (Shape: {df.shape})\nFirst 12 rows:\n{head_str}")
 
             prompt = f"""File: {file_name}
 Sheets data overview:
@@ -56,22 +68,61 @@ User Question: {query_text}
 
 Write a python function `def solve(dfs: dict[str, pd.DataFrame]) -> Any:` to compute and return the answer.
 """
-            code = query_qwen(prompt)
+            kwargs = {"model": args.model} if args.model else {}
+            code = query_qwen(prompt, **kwargs)
             raw_ans, err = execute_code_safely(code, dfs)
+
+            # Self-Correction Reflection Loop
+            retries = 0
+            while err and retries < 2:
+                retries += 1
+                last_err_line = err.strip().splitlines()[-1] if err.strip() else err
+                print(f"Execution error (attempt {retries}): {last_err_line}")
+                print(f"Triggering Self-Correction Reflection (attempt {retries})...")
+                reflection_prompt = f"""File: {file_name}
+Sheets data overview:
+{chr(10).join(schema_summary)}
+
+User Question: {query_text}
+
+Your previous code produced this error:
+{err}
+
+Please fix the error and write a correct python function `def solve(dfs: dict[str, pd.DataFrame]) -> Any:`
+"""
+                code = query_qwen(reflection_prompt, **kwargs)
+                raw_ans, err = execute_code_safely(code, dfs)
+
             if err:
-                print(f"Execution warning for {q_id}: {err}")
+                print(f"Final Execution warning: {err}")
                 final_ans = ""
             else:
                 final_ans = sanitize_answer(raw_ans, query_text)
         except Exception as e:
-            print(f"Error processing {q_id}: {e}")
+            print(f"Error: {e}")
             final_ans = ""
 
+        print(f"-> Prediction: '{final_ans}'")
+        if q_id in gt_map:
+            target = gt_map[q_id]
+            is_match = (str(final_ans).strip() == str(target).strip())
+            print(f"-> Ground Truth: '{target}' | Match: {'✅ YES' if is_match else '❌ NO'}")
+            if is_match:
+                correct_count += 1
+
         results.append({"id": q_id, "answer": final_ans})
+        import time
+        time.sleep(1.5)
 
     out_df = pd.DataFrame(results)
     out_df.to_csv(output_path, index=False)
+    print(f"\n==========================================")
     print(f"Generated results saved to {output_path}")
+    if gt_map:
+        total = len(gt_map)
+        acc = (correct_count / total) * 100
+        print(f"Exact Match Score: {correct_count}/{total} ({acc:.1f}%)")
+    print(f"==========================================")
 
 
 if __name__ == "__main__":

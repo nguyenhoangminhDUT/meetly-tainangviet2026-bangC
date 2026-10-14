@@ -14,9 +14,5 @@ dependencies = [
     "requests>=2.34.2",
 ]
 
-[project.scripts]
-meetly-vkv-bangc = "src.main:main"
-
-[build-system]
-requires = ["uv_build>=0.12.10,<0.13.0"]
-build-backend = "uv_build"
+[tool.uv]
+package = false
