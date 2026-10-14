@@ -100,16 +100,25 @@ def query_llm(
     groq_key = os.getenv("GROQ_API_KEY", "")
     openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
 
-    # Auto-detect or select provider
-    if provider == "groq" or (provider is None and groq_key):
+    # Auto-detect or select provider (Competition default: OpenRouter)
+    if provider == "groq":
         target_provider = "groq"
+    elif provider == "openrouter":
+        target_provider = "openrouter"
+    elif openrouter_key:
+        target_provider = "openrouter"
+    elif groq_key:
+        target_provider = "groq"
+    else:
+        target_provider = "openrouter"
+
+    if target_provider == "groq":
         url = GROQ_URL
         key = api_key or groq_key
         target_model = model or os.getenv("MODEL_ID") or GROQ_DEFAULT_MODEL
         if not key:
             raise ValueError("GROQ_API_KEY is not set.")
     else:
-        target_provider = "openrouter"
         url = OPENROUTER_URL
         key = api_key or openrouter_key
         target_model = model or os.getenv("MODEL_ID") or DEFAULT_MODEL
