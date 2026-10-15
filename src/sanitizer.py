@@ -9,7 +9,10 @@ def sanitize_answer(raw_answer: Any, query: str = "") -> str:
     if raw_answer is None:
         return ""
 
-    text = str(raw_answer).strip()
+    if isinstance(raw_answer, (list, tuple)):
+        text = ", ".join(str(x).strip("'\" ") for x in raw_answer)
+    else:
+        text = str(raw_answer).strip()
 
     # Strip markdown formatting
     text = re.sub(r"^\*\*(.*?)\*\*$", r"\1", text)
@@ -33,12 +36,10 @@ def sanitize_answer(raw_answer: Any, query: str = "") -> str:
 
     # Case 3: Only the integer, without commas or units
     if "without commas or units" in q_lower or "without thousands separators" in q_lower:
-        # Check if query expects multiple integers (e.g. "two integers in the order ... separated by a comma and one space")
-        if "two integers" in q_lower or "separated by a comma and one space" in q_lower:
-            parts = re.findall(r"\b\d[\d,]*\b", text)
-            if len(parts) >= 2:
-                clean_parts = [p.replace(",", "") for p in parts[:2]]
-                return ", ".join(clean_parts)
+        parts = re.findall(r"\b\d[\d,]*\b", text)
+        if len(parts) > 1 and ("," in text or "comma" in q_lower or "and" in q_lower or "two integers" in q_lower):
+            clean_parts = [p.replace(",", "") for p in parts]
+            return ", ".join(clean_parts)
         # Single integer
         cleaned = text.replace(",", "").replace("$", "").replace("%", "").strip()
         nums = re.findall(r"-?\d+", cleaned)
@@ -47,15 +48,13 @@ def sanitize_answer(raw_answer: Any, query: str = "") -> str:
 
     # Case 4: Rounded to two decimal places
     if "two decimal places" in q_lower or "rounded to two decimal places" in q_lower:
-        # Check if query expects multiple floats separated by a comma
         parts = re.findall(r"-?\d+\.?\d*", text.replace(",", " "))
-        if "separated with a comma" in q_lower or "separated by a comma" in q_lower:
-            if len(parts) >= 2:
-                try:
-                    formatted = [f"{float(p):.2f}" for p in parts]
-                    return ", ".join(formatted)
-                except ValueError:
-                    pass
+        if len(parts) > 1 and ("," in text or "comma" in q_lower or "and" in q_lower):
+            try:
+                formatted = [f"{float(p):.2f}" for p in parts]
+                return ", ".join(formatted)
+            except ValueError:
+                pass
         nums = re.findall(r"-?\d+\.?\d*", text)
         if nums:
             try:
@@ -73,7 +72,7 @@ def sanitize_answer(raw_answer: Any, query: str = "") -> str:
         if m:
             raw_cands = m.group(1).replace("and ", "").split(",")
             cands = [c.strip() for c in raw_cands if c.strip()]
-            items = [it.strip() for it in text.split(",")]
+            items = [it.strip(" '\"[]") for it in text.split(",")]
             mapped_items = []
             for it in items:
                 matched = False

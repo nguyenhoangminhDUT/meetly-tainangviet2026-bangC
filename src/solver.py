@@ -26,26 +26,34 @@ def build_system_prompt() -> str:
 Your task is to write a single Python function `def solve(dfs: dict[str, pd.DataFrame]) -> Any:` that precisely answers the user's question using the provided DataFrames.
 
 CORE PRINCIPLES:
-1. Exact Computation: Write clean, vectorized pandas/numpy code. Do not hardcode or hallucinate answers. Return ONLY the computed final value.
-2. Structure & Hierarchy:
+1. Exact Computation & Vectorized Pandas:
+   - Write clean, vectorized pandas/numpy code. Keep it direct and concise (under 35 lines) without long commentary or duplicate helper functions.
+   - Do not hardcode or hallucinate answers. Return ONLY the computed final value.
+2. Structure, Hierarchy & Substring Matching:
    - Composite headers and hierarchical row categories are joined by ' | ' (e.g. 'Main Category | Subcategory').
-   - Use robust matching: `df.iloc[:, 0].astype(str).str.lower().str.strip()` or regex/partial matching (`str.contains(..., case=False, na=False)`).
+   - When matching column names or row categories, ALWAYS lowercase both sides: `if pattern.lower() in text.lower():` or use `re.search(pattern, text, re.IGNORECASE)`.
+   - Substring Collisions: Remember that 'men' is inside 'women', and 'male' is inside 'female'. Always match 'women'/'female' before 'men'/'male', or use word boundaries (r'\\bmen\\b', r'\\bmale\\b').
    - Distinguish data rows from aggregate/summary rows ('Total', 'All', 'Average', 'Subtotal'):
      * When finding min/max, ranking, or comparing individual categories, exclude summary/Total rows.
      * When asked for the overall total/sum across all categories or age groups, check if an aggregate/summary row already exists in the table to retrieve it directly and avoid double-counting.
-3. Units & Data Fidelity:
+     * When searching for category rows (e.g. an age group) to answer an overall question across the population, capture the FIRST occurrence in the table (e.g. `df[mask].iloc[0]` or check `if target is None: target = ...`), because overall totals appear before demographic breakdowns (Men, Women, Race).
+3. Safe Numeric Conversion & Cleaning:
    - Report values in the table's native units as displayed (do not multiply or scale numbers unless the query explicitly asks for a specific scaled unit).
-   - Clean strings from footnote markers (e.g. '(1)', '2/'), non-numeric symbols ('$', '%', ','), and linebreaks '\\n' before numeric conversion.
-4. Temporal & Age Reasoning:
+   - Safely convert series/cells to numeric: remove footnotes in brackets/parentheses (`re.sub(r'\\(.*?\\)|\\[.*?\\]', '', str(val))`) and strip non-numeric symbols (`re.sub(r'[^\\d.-]', '', s)`). NEVER make parentheses optional (e.g. do NOT use `\\(?\\d+\\)?` as that strips data digits).
+   - For scalar strings: use `re.sub(r'\\(.*?\\)|\\[.*?\\]', '', str(val))` and `re.sub(r'[^\\d.-]', '', s)`. (Note: built-in `str.replace` does NOT take `regex=True`, use `re.sub`).
+   - In pandas: `pd.to_numeric(s.astype(str).str.replace(r'\\(.*?\\)|\\[.*?\\]', '', regex=True).str.replace(r'[^\\d.-]', '', regex=True), errors='coerce')`.
+4. Row/Column Aggregation:
+   - When asked for average or total across categories that span columns for a row, select the data columns (`row.iloc[1:]`), convert to numeric, and take `.mean()` or `.sum()`.
+5. Candidate Ranking & List Formatting:
+   - When ranking or listing specific candidate names explicitly provided in the question (e.g. 'Agriculture, Manufacturing, and Construction'), return the exact candidate strings from the question in the resulting comma-separated string, not the longer or modified table header strings.
+6. Temporal & Age Reasoning:
    - When identifying oldest/youngest entities or calculating age, if both a Birth Date and an Event/Record/Admission Date exist in the table, determine age as elapsed duration from birth date to that event date (`event_date - birth_date`). Parse all dates using `pd.to_datetime(...)`.
-5. Strict Query Compliance:
+7. Strict Query Compliance:
    - If the question asks for Yes/No, return 'Yes' or 'No'.
    - If the question asks for integer(s), return int or comma-separated integers as requested.
    - If rounded to N decimal places, return round(val, N).
-   - If asked for an ordered list or ranking among specified candidates, return them as a comma-separated string matching the exact candidate names and order requested.
-6. Execution Safety:
+8. Execution Safety:
    - Enclose the code in ```python ... ``` blocks.
-   - Keep the code concise and direct without verbose comments or explanations.
 """
 
 
@@ -148,7 +156,7 @@ def query_llm(
     payload = {
         "model": target_model,
         "temperature": temperature,
-        "max_tokens": 800,
+        "max_tokens": 1000,
         "messages": [
             {"role": "system", "content": build_system_prompt()},
             {"role": "user", "content": prompt},
