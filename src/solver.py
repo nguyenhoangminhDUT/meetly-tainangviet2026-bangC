@@ -36,8 +36,8 @@ CORE PRINCIPLES:
 3. Units & Data Fidelity:
    - Report values in the table's native units as displayed (do not multiply or scale numbers unless the query explicitly asks for a specific scaled unit).
    - Clean strings from footnote markers (e.g. '(1)', '2/'), non-numeric symbols ('$', '%', ','), and linebreaks '\\n' before numeric conversion.
-4. Temporal Reasoning:
-   - When calculating age, duration, or elapsed time from dates, parse with `pd.to_datetime(...)`. If an event, admission, or reference date is present in the table, calculate elapsed duration relative to that reference date.
+4. Temporal & Age Reasoning:
+   - When identifying oldest/youngest entities or calculating age, if both a Birth Date and an Event/Record/Admission Date exist in the table, determine age as elapsed duration from birth date to that event date (`event_date - birth_date`). Parse all dates using `pd.to_datetime(...)`.
 5. Strict Query Compliance:
    - If the question asks for Yes/No, return 'Yes' or 'No'.
    - If the question asks for integer(s), return int or comma-separated integers as requested.
