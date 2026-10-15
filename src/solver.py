@@ -148,7 +148,7 @@ def query_llm(
     payload = {
         "model": target_model,
         "temperature": temperature,
-        "max_tokens": 450,
+        "max_tokens": 800,
         "messages": [
             {"role": "system", "content": build_system_prompt()},
             {"role": "user", "content": prompt},

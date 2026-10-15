@@ -73,7 +73,7 @@ def clean_and_headerize(df: pd.DataFrame) -> pd.DataFrame:
             start = r + 1
     sub_df = df.iloc[start:].reset_index(drop=True)
 
-    # Step 2: Detect first actual data row
+    # Step 2: Detect first actual data or section row
     first_data = 1
     for r in range(min(7, len(sub_df))):
         row_vals = sub_df.iloc[r]
@@ -84,7 +84,8 @@ def clean_and_headerize(df: pd.DataFrame) -> pd.DataFrame:
                 nums.append(float(s_num))
         # Header rows may contain years (1900-2100) or units; data rows contain actual values
         non_year_nums = [n for n in nums if n < 1900 or n > 2100]
-        if len(non_year_nums) >= 2:
+        other_vals = [x for x in row_vals.iloc[1:] if pd.notna(x) and str(x).strip() not in ['', 'nan', 'None']]
+        if len(non_year_nums) >= 2 or (r > 0 and len(other_vals) == 0):
             first_data = r
             break
 
