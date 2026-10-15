@@ -47,14 +47,13 @@ def sanitize_answer(raw_answer: Any, query: str = "") -> str:
 
     # Case 4: Rounded to two decimal places
     if "two decimal places" in q_lower or "rounded to two decimal places" in q_lower:
-        # Check if list of floats e.g. `men, women`
+        # Check if query expects multiple floats separated by a comma
         parts = re.findall(r"-?\d+\.?\d*", text.replace(",", " "))
-        if "men, women" in q_lower or "separated with a comma and one space" in q_lower:
+        if "separated with a comma" in q_lower or "separated by a comma" in q_lower:
             if len(parts) >= 2:
                 try:
-                    f1 = float(parts[0])
-                    f2 = float(parts[1])
-                    return f"{f1:.2f}, {f2:.2f}"
+                    formatted = [f"{float(p):.2f}" for p in parts]
+                    return ", ".join(formatted)
                 except ValueError:
                     pass
         nums = re.findall(r"-?\d+\.?\d*", text)

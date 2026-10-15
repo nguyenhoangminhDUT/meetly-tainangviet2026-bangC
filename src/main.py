@@ -12,6 +12,21 @@ from src.sanitizer import sanitize_answer
 from src.solver import query_qwen, execute_code_safely, TOKEN_STATS
 
 
+class TeeLogger:
+    def __init__(self, filename: str):
+        self.terminal = sys.stdout
+        self.log = open(filename, "w", encoding="utf-8")
+
+    def write(self, message: str):
+        self.terminal.write(message)
+        self.log.write(message)
+        self.log.flush()
+
+    def flush(self):
+        self.terminal.flush()
+        self.log.flush()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Meetly AI 2026 TableQA Runner")
     parser.add_argument("--xlsx_dir", type=str, default="data/data_public_1/xlsx_files", help="Path to directory containing .xlsx files")
@@ -19,8 +34,12 @@ def main():
     parser.add_argument("--model", type=str, default=None, help="LLM model ID")
     parser.add_argument("--provider", type=str, default=None, choices=["openrouter", "groq"], help="LLM Provider (groq or openrouter)")
     parser.add_argument("--output", type=str, default="submission.csv", help="Path to output submission.csv")
+    parser.add_argument("--log_file", type=str, default="eval_detail_log.txt", help="Path to save detailed execution log")
     parser.add_argument("--eval", action="store_true", help="Compare output against ground truth in sample_submission.csv")
     args = parser.parse_args()
+
+    if args.log_file:
+        sys.stdout = TeeLogger(args.log_file)
 
     xlsx_dir = Path(args.xlsx_dir)
     queries_path = Path(args.queries)
