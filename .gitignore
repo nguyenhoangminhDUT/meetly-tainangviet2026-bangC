@@ -14,6 +14,7 @@ vkv_text.txt
 *.tmp
 *.log
 submission.csv
+*.zip
 
 # Environment variables
 .env

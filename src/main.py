@@ -122,7 +122,7 @@ Please fix the error and write a correct python function `def solve(dfs: dict[st
 
         results.append({"id": q_id, "answer": final_ans})
         import time
-        time.sleep(3.5)
+        time.sleep(1.0)
 
     out_df = pd.DataFrame(results)
     out_df.to_csv(output_path, index=False)

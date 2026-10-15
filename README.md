@@ -5,6 +5,38 @@
 
 ---
 
+## 🚀 HƯỚNG DẪN DÀNH CHO BAN GIÁM KHẢO (QUICKSTART)
+
+### 1. Cài đặt môi trường (Python >= 3.11)
+Cài đặt các gói phụ thuộc cần thiết bằng `pip`:
+```bash
+pip install -r requirements.txt
+```
+*(Hoặc sử dụng `uv sync` nếu máy chấm có sẵn trình quản lý `uv`).*
+
+### 2. Thiết lập Khóa API
+Hệ thống tuân thủ nghiêm ngặt quy chế **không hardcode API key**:
+```bash
+export OPENROUTER_API_KEY="sk-or-v1-..."
+```
+*(Mặc định chương trình tự động gọi mô hình `qwen/qwen3.7-flash` qua OpenRouter với chi phí trung bình cực thấp: ~$0.00003/query, thấp hơn 3000 lần mức trần 0.10 USD/query).*
+
+### 3. Thực thi chương trình
+Chạy giải pháp theo đúng định dạng dòng lệnh của BTC:
+```bash
+python -m src.main --xlsx_dir <đường_dẫn_thư_mục_xlsx> --queries <đường_dẫn_queries.json> --output submission.csv
+```
+
+**Ví dụ chạy kiểm thử với dữ liệu đợt 1:**
+```bash
+python -m src.main \
+  --xlsx_dir data/data_public_1/xlsx_files \
+  --queries data/data_public_1/queries.json \
+  --output submission.csv
+```
+
+---
+
 ## 📌 DÀNH CHO COLLABORATORS: TỔNG QUAN DỰ ÁN (OVERVIEW)
 
 Tài liệu này cung cấp toàn bộ thông tin nền tảng, bối cảnh bài toán, kiến trúc kỹ thuật và hướng dẫn làm việc nhóm để các thành viên trong đội nắm bắt nhanh chóng và phối hợp hiệu quả.
