@@ -9,7 +9,7 @@ import pandas as pd
 
 from src.normalizer import load_normalized_workbook
 from src.sanitizer import sanitize_answer
-from src.solver import query_qwen, execute_code_safely
+from src.solver import query_qwen, execute_code_safely, TOKEN_STATS
 
 
 def main():
@@ -113,6 +113,7 @@ Please fix the error and write a correct python function `def solve(dfs: dict[st
             final_ans = ""
 
         print(f"-> Prediction: '{final_ans}'")
+        print(f"-> Tokens for query: {TOKEN_STATS['last_total_tokens']} (Prompt: {TOKEN_STATS['last_prompt_tokens']}, Output: {TOKEN_STATS['last_completion_tokens']})")
         if q_id in gt_map:
             target = gt_map[q_id]
             is_match = (str(final_ans).strip() == str(target).strip())
@@ -132,6 +133,17 @@ Please fix the error and write a correct python function `def solve(dfs: dict[st
         total = len(gt_map)
         acc = (correct_count / total) * 100
         print(f"Exact Match Score: {correct_count}/{total} ({acc:.1f}%)")
+    print(f"------------------------------------------")
+    print(f"LLM Token Usage Summary:")
+    print(f"  • Total API Calls: {TOKEN_STATS['call_count']}")
+    print(f"  • Total Prompt Tokens: {TOKEN_STATS['prompt_tokens']:,}")
+    print(f"  • Total Output Tokens: {TOKEN_STATS['completion_tokens']:,}")
+    print(f"  • Total Tokens Used: {TOKEN_STATS['total_tokens']:,}")
+    avg_tok = TOKEN_STATS['total_tokens'] / max(1, len(queries))
+    print(f"  • Average Tokens per Query: {avg_tok:.1f}")
+    est_cost = (TOKEN_STATS['prompt_tokens'] * 0.03 + TOKEN_STATS['completion_tokens'] * 0.13) / 1_000_000
+    print(f"  • Est. Cost (qwen/qwen3.7-flash): ${est_cost:.6f} USD")
+    print(f"  • Avg Cost per Query: ${est_cost / max(1, len(queries)):.6f} USD")
     print(f"==========================================")
 
 

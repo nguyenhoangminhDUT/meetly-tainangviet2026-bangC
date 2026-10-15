@@ -34,7 +34,7 @@ Rules:
 5. Unit convention: Do NOT scale or multiply numbers by thousands. If table numbers are 265 under '[In thousands]', return 265 directly as the integer, do NOT multiply by 1000 unless explicitly requested.
 6. In pandas, use `df.iloc[:, 0].astype(str).str.lower().str.strip()` or regex/partial matching (`str.contains(..., case=False, na=False)`) to locate row labels accurately, ignoring footnote markers like (1) or (2).
    Note that section headers are prepended to row labels with ' | ' (e.g. 'Women | Unemployment rate', 'Men | Civilian labor force').
-7. Summary rows: When finding min, max, ranking, or calculating proportions among categories/industries/hours, EXCLUDE summary or 'Total' rows (e.g. 'Total, persons at work', 'Total', 'All industries').
+7. Summary rows: When finding min, max, ranking, or calculating proportions among categories/industries/hours, EXCLUDE summary or 'Total' rows (e.g. 'Total, persons at work', 'Total', 'All industries'). When asked for the overall total/sum across all age groups or categories, if a pre-calculated row like 'Total, 16 years and over' or 'Total' exists in the table, retrieve that row value directly instead of re-summing subcategory rows to avoid double-counting.
 8. Age calculation: In tables with both Date of Birth and Date of Admission, calculate person's age on admission date as (pd.to_datetime(Admission) - pd.to_datetime(Birth)).dt.days.
 9. Multiple values format:
    - If asked for two integers (e.g. "order `1 to 34 hours, 35 hours or more`"), return a string formatted as f"{val1}, {val2}".
@@ -87,6 +87,17 @@ GROQ_DEFAULT_MODEL = "qwen/qwen3.8-27b"
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = os.getenv("MODEL_ID", "qwen/qwen3.7-flash")
+
+
+TOKEN_STATS = {
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0,
+    "call_count": 0,
+    "last_prompt_tokens": 0,
+    "last_completion_tokens": 0,
+    "last_total_tokens": 0,
+}
 
 
 def query_llm(
@@ -142,6 +153,14 @@ def query_llm(
     for attempt in range(6):
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=60)
+            if resp.status_code in (402, 403) and target_provider == "openrouter" and groq_key and provider is None:
+                print(f"[Notice] OpenRouter key limit reached. Falling back to Groq for testing...")
+                target_provider = "groq"
+                url = GROQ_URL
+                headers["Authorization"] = f"Bearer {groq_key}"
+                payload["model"] = os.getenv("GROQ_MODEL_ID") or GROQ_DEFAULT_MODEL
+                continue
+
             if resp.status_code == 429:
                 import time
                 reset_val = resp.headers.get("x-ratelimit-reset-tokens")
@@ -157,6 +176,17 @@ def query_llm(
                 continue
             resp.raise_for_status()
             data = resp.json()
+            usage = data.get("usage", {})
+            p_tok = usage.get("prompt_tokens", 0)
+            c_tok = usage.get("completion_tokens", 0)
+            t_tok = usage.get("total_tokens", p_tok + c_tok)
+            TOKEN_STATS["prompt_tokens"] += p_tok
+            TOKEN_STATS["completion_tokens"] += c_tok
+            TOKEN_STATS["total_tokens"] += t_tok
+            TOKEN_STATS["call_count"] += 1
+            TOKEN_STATS["last_prompt_tokens"] = p_tok
+            TOKEN_STATS["last_completion_tokens"] = c_tok
+            TOKEN_STATS["last_total_tokens"] = t_tok
             return data["choices"][0]["message"]["content"]
         except Exception as e:
             if attempt < 5:
