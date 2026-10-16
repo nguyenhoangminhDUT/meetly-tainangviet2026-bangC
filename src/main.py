@@ -85,13 +85,13 @@ def main():
                 schema_summary.append("\n".join(info))
 
             prompt = f"""File: {file_name}
-Sheets data overview:
-{chr(10).join(schema_summary)}
+            Sheets data overview:
+            {chr(10).join(schema_summary)}
 
-User Question: {query_text}
+            User Question: {query_text}
 
-Write a python function `def solve(dfs: dict[str, pd.DataFrame]) -> Any:` to compute and return the answer.
-"""
+            Write a python function `def solve(dfs: dict[str, pd.DataFrame]) -> Any:` to compute and return the answer.
+            """
             kwargs = {}
             if args.model:
                 kwargs["model"] = args.model
