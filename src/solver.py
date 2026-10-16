@@ -51,6 +51,9 @@ DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL_ID", "gemini-1.5-flash")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/v1/chat/completions")
 DEFAULT_OLLAMA_MODEL = os.getenv("OLLAMA_MODEL_ID", "qwen2.5-coder:7b")
 
+SELFHOSTED_URL = os.getenv("SELFHOSTED_URL", "https://llm2.dutai.site/v1/chat/completions")
+DEFAULT_SELFHOSTED_MODEL = os.getenv("SELFHOSTED_MODEL_ID", "ggml-org/gemma-4-e4b-it-GGUF:Q4_0")
+
 
 def build_system_prompt() -> str:
     """Constructs the high-precision system prompt for Program-Aided Reasoning."""
@@ -58,6 +61,9 @@ def build_system_prompt() -> str:
 Your task is to write a single Python function `def solve(dfs: dict[str, pd.DataFrame]) -> Any:` that precisely answers the user's question using the provided DataFrames.
 
 CORE PRINCIPLES:
+0. Input Structure:
+   - The argument `dfs` is a dictionary where KEYS ARE WORKSHEET NAMES (e.g. `df = dfs['Table A-6']` or `df = list(dfs.values())[0]`). Keys are NEVER file names or file paths.
+
 1. Multilingual Understanding & Strict Output Compliance:
    - The user query may be in English, Vietnamese, French, Korean, Chinese, or other languages.
    - Answer strictly according to the format asked in the query:
@@ -184,13 +190,19 @@ def query_llm(
     elif target_provider == "ollama":
         url = OLLAMA_URL
         target_model = model or DEFAULT_OLLAMA_MODEL
+    elif target_provider == "selfhosted":
+        url = SELFHOSTED_URL
+        target_model = model or DEFAULT_SELFHOSTED_MODEL
+        key = api_key or os.getenv("SELFHOSTED_API_KEY", "")
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
     else:
         raise ValueError(f"Unsupported provider: {target_provider}")
 
     payload = {
         "model": target_model,
         "temperature": temperature,
-        "max_tokens": 1000,
+        "max_tokens": 1500,
         "messages": [
             {"role": "system", "content": sys_prompt},
             {"role": "user", "content": prompt},

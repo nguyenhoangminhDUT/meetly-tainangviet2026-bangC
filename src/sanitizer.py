@@ -36,6 +36,16 @@ def sanitize_answer(raw_answer: Any, query: str = "") -> str:
 
     q_lower = query.lower()
 
+    # Strip hierarchical delimiter ' | ' if one part is already mentioned in query or is redundant section header
+    if " | " in text and not any(k in q_lower for k in ["both", "order", "rank", "list", "descending", "ascending"]):
+        parts = text.split(" | ")
+        if any(p.strip().lower() in q_lower for p in parts[1:]):
+            text = parts[0].strip()
+        elif any(p.strip().lower() in q_lower for p in parts[:-1]):
+            text = parts[-1].strip()
+        elif len(parts) == 2 and any(re.search(r"\b(19\d\d|20\d\d)\b", p) for p in parts[1:]):
+            text = parts[1].strip()
+
     # =========================================================================
     # 1. Yes / No queries (English, Vietnamese, French, Chinese, Korean)
     # =========================================================================

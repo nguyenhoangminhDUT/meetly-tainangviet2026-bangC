@@ -99,7 +99,7 @@ def main():
     # Model and connection settings
     parser.add_argument("--api_key", type=str, default=None, help="OpenRouter API key (defaults to OPENROUTER_API_KEY env var)")
     parser.add_argument("--model", type=str, default=COMPETITION_MODEL_ID, help="LLM model identifier")
-    parser.add_argument("--provider", type=str, default="openrouter", choices=["openrouter", "groq", "gemini", "ollama"], help="LLM provider")
+    parser.add_argument("--provider", type=str, default="openrouter", choices=["openrouter", "groq", "gemini", "ollama", "selfhosted"], help="LLM provider")
 
     # Evaluation and logging utilities
     parser.add_argument("--eval", action="store_true", help="Evaluate against ground truth answers if present in data directory")
