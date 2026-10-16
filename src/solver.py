@@ -21,7 +21,13 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_OPENROUTER_MODEL = os.getenv("MODEL_ID", "qwen/qwen3.7-flash")
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-DEFAULT_GROQ_MODEL = os.getenv("GROQ_MODEL_ID", "llama-3.3-70b-versatile")
+DEFAULT_GROQ_MODEL = os.getenv("GROQ_MODEL_ID", "llama-3.1-8b-instant")
+
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL_ID", "gemini-1.5-flash")
+
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/v1/chat/completions")
+DEFAULT_OLLAMA_MODEL = os.getenv("OLLAMA_MODEL_ID", "qwen2.5-coder:7b")
 
 TOKEN_STATS = {
     "prompt_tokens": 0,
@@ -125,39 +131,58 @@ def query_llm(
     provider: Optional[str] = None,
     temperature: float = 0.0,
 ) -> str:
-    """Unified LLM caller supporting both OpenRouter (competition default) and Groq (development testing)."""
+    """Unified LLM caller supporting OpenRouter, Groq (8B/9B free), Gemini (free), and Ollama (local free)."""
     groq_key = os.getenv("GROQ_API_KEY", "")
     openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
+    gemini_key = os.getenv("GEMINI_API_KEY", "")
 
     # Auto-detect or select provider
-    if provider == "groq":
-        target_provider = "groq"
-    elif provider == "openrouter":
-        target_provider = "openrouter"
+    if provider:
+        target_provider = provider.lower()
     elif openrouter_key:
         target_provider = "openrouter"
     elif groq_key:
         target_provider = "groq"
+    elif gemini_key:
+        target_provider = "gemini"
     else:
         target_provider = "openrouter"
+
+    headers = {"Content-Type": "application/json"}
 
     if target_provider == "groq":
         url = GROQ_URL
         key = api_key or groq_key
-        target_model = model or os.getenv("MODEL_ID") or DEFAULT_GROQ_MODEL
+        target_model = model or os.getenv("GROQ_MODEL_ID") or os.getenv("MODEL_ID") or DEFAULT_GROQ_MODEL
         if not key:
-            raise ValueError("GROQ_API_KEY is not set. Please export GROQ_API_KEY or set in .env")
+            raise ValueError(
+                "GROQ_API_KEY is not set. Groq provides 100% free API keys (no credit card): "
+                "Get a free key at https://console.groq.com/keys and set GROQ_API_KEY in .env"
+            )
+        headers["Authorization"] = f"Bearer {key}"
+    elif target_provider == "gemini":
+        url = GEMINI_URL
+        key = api_key or gemini_key
+        target_model = model or os.getenv("GEMINI_MODEL_ID") or os.getenv("MODEL_ID") or DEFAULT_GEMINI_MODEL
+        if not key:
+            raise ValueError(
+                "GEMINI_API_KEY is not set. Google AI Studio provides 100% free Gemini Flash API: "
+                "Get a free key at https://aistudio.google.com/apikey and set GEMINI_API_KEY in .env"
+            )
+        headers["Authorization"] = f"Bearer {key}"
+    elif target_provider == "ollama":
+        url = OLLAMA_URL
+        target_model = model or os.getenv("OLLAMA_MODEL_ID") or os.getenv("MODEL_ID") or DEFAULT_OLLAMA_MODEL
     else:
         url = OPENROUTER_URL
         key = api_key or openrouter_key
         target_model = model or os.getenv("MODEL_ID") or DEFAULT_OPENROUTER_MODEL
         if not key:
-            raise ValueError("OPENROUTER_API_KEY is not set. Please export OPENROUTER_API_KEY or set in .env")
-
-    headers = {
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-    }
+            raise ValueError(
+                "OPENROUTER_API_KEY is not set. Get an API key at https://openrouter.ai/keys "
+                "(Free tier models like meta-llama/llama-3.1-8b-instruct:free can be used with $0 balance)."
+            )
+        headers["Authorization"] = f"Bearer {key}"
     payload = {
         "model": target_model,
         "temperature": temperature,

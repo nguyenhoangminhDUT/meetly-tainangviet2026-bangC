@@ -209,4 +209,3 @@ PYTHONPATH=. uv run python tests/test_sanitizer.py
 
 ---
 
-*Chúc đội Meetly thi đấu bản lĩnh và giành giải thưởng cao nhất tại AI Tài Năng Việt 2026!*
