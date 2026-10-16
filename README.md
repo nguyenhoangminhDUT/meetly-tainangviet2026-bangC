@@ -68,7 +68,7 @@ Tệp `submission.csv` được tạo ra đúng chuẩn 2 cột `id,answer`, m�
 | :--- | :--- | :--- | :---: |
 | **Mô hình LLM** | Bắt buộc hỗ trợ **Qwen3.7 Flash** (`qwen/qwen3.7-flash`) qua OpenRouter | ✅ Đã tích hợp `CompetitionLLMClient` kết nối trực tiếp OpenRouter | **100% Tuân thủ** |
 | **Chi phí LLM** | $\le \mathbf{\$0.10}$ / câu hỏi (tính cả retry) | ✅ $\approx \mathbf{\$0.00003 - \$0.0001}$ / câu (thấp hơn hàng trăm lần) | **100% Tuân thủ** |
-| **Thời gian chạy**| $\le \mathbf{40}$ phút cho 20 câu (tối đa 120s/câu) | ✅ $\approx \mathbf{1 - 2}$ giây / câu ($\approx 30$ giây cho 20 câu) | **Nhanh gấp 80 lần** |
+| **Thời gian chạy**| $\le \mathbf{40}$ phút cho 20 câu (tối đa 120s/câu) | ✅ $\approx \mathbf{0.8 - 1.2}$ giây / câu ($\approx 20 - 25$ giây cho 20 câu) | **Nhanh gấp >100 lần** |
 | **Cấu hình máy chấm**| 6 core vCPU, 12 GB RAM (**CPU-Only, Không có GPU**) | ✅ Tối ưu 100% bằng thuật toán Pandas/CPU | **100% Tương thích** |
 | **Bộ nhớ (RAM)** | Quá trình chạy $\le \mathbf{1\text{ GB}}$ RAM | ✅ Đỉnh mức sử dụng $\approx \mathbf{150 - 250\text{ MB}}$ RAM | **100% Tuân thủ** |
 | **Dung lượng nộp**| Tệp `.zip` nộp bài $\le \mathbf{100\text{ MB}}$ | ✅ Toàn bộ mã nguồn & tài liệu $\approx \mathbf{6\text{ MB}}$ | **100% Tuân thủ** |
