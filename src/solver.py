@@ -1,4 +1,11 @@
-"""Program-Aided Reasoning (PoT) Solver with Qwen / LLM via OpenRouter and Groq."""
+"""Program-Aided Reasoning (PoT) Solver Module.
+
+Orchestrates:
+1. System Prompt Synthesis: Guides LLM to produce vectorized Python/Pandas logic.
+2. Official Competition LLM Execution: Primary route through `CompetitionLLMClient` (Qwen 3.7 Flash).
+3. Optional Developer Test Providers: Groq, Gemini, Ollama adapters for zero-cost local research.
+4. Sandboxed Code Execution: Executes `solve(dfs)` in an isolated scope with AST safety checking.
+"""
 
 import os
 import re
@@ -13,13 +20,23 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import requests
 import pandas as pd
 import numpy as np
-from dotenv import load_dotenv
 
-load_dotenv()
+try:
+    from src.llm_client import (
+        CompetitionLLMClient,
+        COMPETITION_MODEL_ID,
+        TOKEN_STATS,
+        get_token_usage_report,
+    )
+except ImportError:
+    from llm_client import (
+        CompetitionLLMClient,
+        COMPETITION_MODEL_ID,
+        TOKEN_STATS,
+        get_token_usage_report,
+    )
 
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_OPENROUTER_MODEL = os.getenv("MODEL_ID", "qwen/qwen3.7-flash")
-
+# Optional Development Endpoints
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 DEFAULT_GROQ_MODEL = os.getenv("GROQ_MODEL_ID", "llama-3.1-8b-instant")
 
@@ -29,18 +46,9 @@ DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL_ID", "gemini-1.5-flash")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/v1/chat/completions")
 DEFAULT_OLLAMA_MODEL = os.getenv("OLLAMA_MODEL_ID", "qwen2.5-coder:7b")
 
-TOKEN_STATS = {
-    "prompt_tokens": 0,
-    "completion_tokens": 0,
-    "total_tokens": 0,
-    "call_count": 0,
-    "last_prompt_tokens": 0,
-    "last_completion_tokens": 0,
-    "last_total_tokens": 0,
-}
-
 
 def build_system_prompt() -> str:
+    """Constructs the high-precision system prompt for Program-Aided Reasoning."""
     return r"""You are an expert Python data scientist specializing in spreadsheet analysis and Pandas.
 Your task is to write a single Python function `def solve(dfs: dict[str, pd.DataFrame]) -> Any:` that precisely answers the user's question using the provided DataFrames.
 
@@ -61,7 +69,7 @@ CORE PRINCIPLES:
      * Indent 0 = top-level, Indent 1 = category, Indent 2 = subcategory.
      * To find categories directly under a parent category (e.g. directly under 'Housing' with indent 1), look for rows that appear after 'Housing' with indent == parent_indent + 1, stopping before the next item with indent <= parent_indent.
    - Section headers in Column 0: When tables have demographic/activity sections (e.g. 'Own household children 6-17, none younger | Housework'), match using `str.contains(...)` with `case=False, na=False` or check `pattern.lower() in str(val).lower()`.
-   - Substring Collisions: Remember 'men' is inside 'women', and 'male' is inside 'female'. Always match 'women'/'female' before 'men'/'male', or use word boundaries (r'\\bmen\\b', r'\\bmale\\b').
+   - Substring Collisions: Remember 'men' is inside 'women', and 'male' is inside 'female'. Always match 'women'/'female' before 'men'/'male', or use word boundaries (r'\bmen\b', r'\bmale\b').
 
 3. Safe Numeric Conversion & Cleaning:
    - Values in the table may be strings containing commas (e.g. '58,176'), currency ('$851'), percent ('10%'), negatives in parentheses '(1.5)' -> -1.5, or missing markers '..' / '-'.
@@ -119,7 +127,7 @@ def execute_code_safely(code: str, dfs: Dict[str, pd.DataFrame]) -> Tuple[Any, O
             return None, "Function 'solve' not defined in generated code"
         result = local_vars["solve"](dfs)
         return result, None
-    except Exception as e:
+    except Exception:
         err_msg = traceback.format_exc()
         return None, err_msg
 
@@ -131,114 +139,69 @@ def query_llm(
     provider: Optional[str] = None,
     temperature: float = 0.0,
 ) -> str:
-    """Unified LLM caller supporting OpenRouter, Groq (8B/9B free), Gemini (free), and Ollama (local free)."""
-    groq_key = os.getenv("GROQ_API_KEY", "")
-    openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
-    gemini_key = os.getenv("GEMINI_API_KEY", "")
+    """Primary LLM caller.
+    
+    Defaults to the official competition model (Qwen 3.7 Flash via OpenRouter).
+    Supports developer test adapters (Groq, Gemini, Ollama) when explicitly requested.
+    """
+    sys_prompt = build_system_prompt()
 
-    # Auto-detect or select provider
-    if provider:
-        target_provider = provider.lower()
-    elif openrouter_key:
-        target_provider = "openrouter"
-    elif groq_key:
-        target_provider = "groq"
-    elif gemini_key:
-        target_provider = "gemini"
-    else:
-        target_provider = "openrouter"
+    # Determine provider: default to official competition OpenRouter
+    target_provider = (provider or "openrouter").lower()
 
+    if target_provider == "openrouter":
+        client = CompetitionLLMClient(
+            api_key=api_key,
+            model_id=model or COMPETITION_MODEL_ID,
+        )
+        return client.query(prompt, system_prompt=sys_prompt, temperature=temperature)
+
+    # Optional Testing Providers (Groq, Gemini, Ollama)
     headers = {"Content-Type": "application/json"}
-
     if target_provider == "groq":
         url = GROQ_URL
-        key = api_key or groq_key
-        target_model = model or os.getenv("GROQ_MODEL_ID") or os.getenv("MODEL_ID") or DEFAULT_GROQ_MODEL
+        key = api_key or os.getenv("GROQ_API_KEY", "")
+        target_model = model or DEFAULT_GROQ_MODEL
         if not key:
-            raise ValueError(
-                "GROQ_API_KEY is not set. Groq provides 100% free API keys (no credit card): "
-                "Get a free key at https://console.groq.com/keys and set GROQ_API_KEY in .env"
-            )
+            raise ValueError("GROQ_API_KEY is not set for groq provider.")
         headers["Authorization"] = f"Bearer {key}"
     elif target_provider == "gemini":
         url = GEMINI_URL
-        key = api_key or gemini_key
-        target_model = model or os.getenv("GEMINI_MODEL_ID") or os.getenv("MODEL_ID") or DEFAULT_GEMINI_MODEL
+        key = api_key or os.getenv("GEMINI_API_KEY", "")
+        target_model = model or DEFAULT_GEMINI_MODEL
         if not key:
-            raise ValueError(
-                "GEMINI_API_KEY is not set. Google AI Studio provides 100% free Gemini Flash API: "
-                "Get a free key at https://aistudio.google.com/apikey and set GEMINI_API_KEY in .env"
-            )
+            raise ValueError("GEMINI_API_KEY is not set for gemini provider.")
         headers["Authorization"] = f"Bearer {key}"
     elif target_provider == "ollama":
         url = OLLAMA_URL
-        target_model = model or os.getenv("OLLAMA_MODEL_ID") or os.getenv("MODEL_ID") or DEFAULT_OLLAMA_MODEL
+        target_model = model or DEFAULT_OLLAMA_MODEL
     else:
-        url = OPENROUTER_URL
-        key = api_key or openrouter_key
-        target_model = model or os.getenv("MODEL_ID") or DEFAULT_OPENROUTER_MODEL
-        if not key:
-            raise ValueError(
-                "OPENROUTER_API_KEY is not set. Get an API key at https://openrouter.ai/keys "
-                "(Free tier models like meta-llama/llama-3.1-8b-instruct:free can be used with $0 balance)."
-            )
-        headers["Authorization"] = f"Bearer {key}"
+        raise ValueError(f"Unsupported provider: {target_provider}")
+
     payload = {
         "model": target_model,
         "temperature": temperature,
         "max_tokens": 1000,
         "messages": [
-            {"role": "system", "content": build_system_prompt()},
+            {"role": "system", "content": sys_prompt},
             {"role": "user", "content": prompt},
         ],
     }
 
-    for attempt in range(6):
-        try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=60)
-            if resp.status_code in (402, 403) and target_provider == "openrouter" and groq_key and provider is None:
-                print(f"[Notice] OpenRouter key limit reached. Falling back to Groq for testing...")
-                target_provider = "groq"
-                url = GROQ_URL
-                headers["Authorization"] = f"Bearer {groq_key}"
-                payload["model"] = os.getenv("GROQ_MODEL_ID") or DEFAULT_GROQ_MODEL
-                continue
+    resp = requests.post(url, headers=headers, json=payload, timeout=60)
+    resp.raise_for_status()
+    data = resp.json()
 
-            if resp.status_code == 429:
-                import time
-                reset_val = resp.headers.get("x-ratelimit-reset-tokens")
-                if reset_val and reset_val.endswith("s"):
-                    try:
-                        wait_time = float(reset_val[:-1]) + 2.0
-                    except ValueError:
-                        wait_time = 10.0
-                else:
-                    wait_time = 6.0 * (attempt + 1)
-                print(f"[{target_provider.upper()} RateLimit] 429 received, waiting {wait_time:.1f}s until token reset...")
-                time.sleep(wait_time)
-                continue
+    usage = data.get("usage", {})
+    p_tok = usage.get("prompt_tokens", 0)
+    c_tok = usage.get("completion_tokens", 0)
+    TOKEN_STATS["prompt_tokens"] += p_tok
+    TOKEN_STATS["completion_tokens"] += c_tok
+    TOKEN_STATS["total_tokens"] += p_tok + c_tok
+    TOKEN_STATS["call_count"] += 1
 
-            resp.raise_for_status()
-            data = resp.json()
-            usage = data.get("usage", {})
-            p_tok = usage.get("prompt_tokens", 0)
-            c_tok = usage.get("completion_tokens", 0)
-            t_tok = usage.get("total_tokens", p_tok + c_tok)
-            TOKEN_STATS["prompt_tokens"] += p_tok
-            TOKEN_STATS["completion_tokens"] += c_tok
-            TOKEN_STATS["total_tokens"] += t_tok
-            TOKEN_STATS["call_count"] += 1
-            TOKEN_STATS["last_prompt_tokens"] = p_tok
-            TOKEN_STATS["last_completion_tokens"] = c_tok
-            TOKEN_STATS["last_total_tokens"] = t_tok
-            return data["choices"][0]["message"]["content"]
-        except Exception as e:
-            if attempt < 5:
-                import time
-                time.sleep(3 * (attempt + 1))
-            else:
-                raise
+    return data["choices"][0]["message"]["content"]
 
 
-# Backward compatible alias
+# Backward-compatible alias
 query_qwen = query_llm
