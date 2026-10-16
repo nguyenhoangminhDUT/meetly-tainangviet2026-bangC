@@ -16,10 +16,15 @@ import itertools
 import collections
 import unicodedata
 import traceback
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 import requests
 import pandas as pd
 import numpy as np
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 try:
     from src.llm_client import (
@@ -87,9 +92,13 @@ CORE PRINCIPLES:
    - When identifying oldest/youngest entities or calculating age, if both a Birth Date and an Admission/Event Date exist, age is elapsed duration: `(pd.to_datetime(event_date) - pd.to_datetime(birth_date)).dt.days`.
 
 6. Execution Safety & Code Style:
-   - Write clean, vectorized, self-contained pandas/numpy code. Keep it concise (under 40 lines).
-   - Enclose the code strictly in ```python ... ``` blocks.
+   - Write clean, vectorized, self-contained pandas/numpy code. Keep it concise (under 25 lines).
    - Do NOT hardcode or hallucinate answers. Return ONLY the computed final value.
+
+7. Ultra-Fast Generation & Zero Chit-Chat:
+   - Output ONLY the Python code block enclosed in ```python ... ```.
+   - STRICTLY NO conversation, NO introduction ('Here is the code...'), NO line-by-line comments, NO docstrings, and NO explanations after the code block.
+   - Stop immediately after the final line of code.
 """
 
 

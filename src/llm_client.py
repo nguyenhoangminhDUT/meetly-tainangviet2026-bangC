@@ -40,6 +40,19 @@ TOKEN_STATS: Dict[str, Any] = {
 }
 
 
+# Global Persistent Session for HTTP Keep-Alive (Saves ~300ms per request)
+_GLOBAL_SESSION: Optional[requests.Session] = None
+
+def get_http_session() -> requests.Session:
+    global _GLOBAL_SESSION
+    if _GLOBAL_SESSION is None:
+        _GLOBAL_SESSION = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=1)
+        _GLOBAL_SESSION.mount("https://", adapter)
+        _GLOBAL_SESSION.mount("http://", adapter)
+    return _GLOBAL_SESSION
+
+
 class CompetitionLLMClient:
     """Official LLM Client connecting to Qwen3.7 Flash via OpenRouter API."""
 
@@ -48,7 +61,7 @@ class CompetitionLLMClient:
         api_key: Optional[str] = None,
         model_id: str = COMPETITION_MODEL_ID,
         endpoint: str = OPENROUTER_ENDPOINT,
-        timeout: int = 60,
+        timeout: int = 45,
         max_retries: int = 5,
     ):
         self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
@@ -56,13 +69,14 @@ class CompetitionLLMClient:
         self.endpoint = endpoint
         self.timeout = timeout
         self.max_retries = max_retries
+        self.session = get_http_session()
 
     def query(
         self,
         prompt: str,
         system_prompt: Optional[str] = None,
         temperature: float = 0.0,
-        max_tokens: int = 1000,
+        max_tokens: int = 350,
     ) -> str:
         """Sends a query to Qwen3.7 Flash on OpenRouter with automatic backoff retry."""
         if not self.api_key:
@@ -86,16 +100,18 @@ class CompetitionLLMClient:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        payload = {
+        payload: Dict[str, Any] = {
             "model": self.model_id,
             "temperature": temperature,
             "max_tokens": max_tokens,
             "messages": messages,
+            # Speed optimization: Stop as soon as the code block finishes
+            "stop": ["\n```\n", "```\n"],
         }
 
         for attempt in range(self.max_retries + 1):
             try:
-                resp = requests.post(
+                resp = self.session.post(
                     self.endpoint,
                     headers=headers,
                     json=payload,
