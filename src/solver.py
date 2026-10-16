@@ -1,65 +1,86 @@
-"""Program-Aided Reasoning (PoT) Solver with Qwen3.7 Flash via OpenRouter."""
+"""Program-Aided Reasoning (PoT) Solver with Qwen / LLM via OpenRouter and Groq."""
 
 import os
 import re
 import sys
 import math
 import datetime
+import itertools
+import collections
+import unicodedata
 import traceback
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 import requests
 import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
 
-from typing import Any, List, Dict, Tuple, Optional, Union
-import typing
-
 load_dotenv()
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = os.getenv("MODEL_ID", "nvidia/nemotron-3-super-120b-a12b:free")
+DEFAULT_OPENROUTER_MODEL = os.getenv("MODEL_ID", "qwen/qwen3.7-flash")
+
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+DEFAULT_GROQ_MODEL = os.getenv("GROQ_MODEL_ID", "llama-3.3-70b-versatile")
+
+TOKEN_STATS = {
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0,
+    "call_count": 0,
+    "last_prompt_tokens": 0,
+    "last_completion_tokens": 0,
+    "last_total_tokens": 0,
+}
 
 
 def build_system_prompt() -> str:
-    return """You are an expert Python data scientist specializing in spreadsheet analysis and Pandas.
+    return r"""You are an expert Python data scientist specializing in spreadsheet analysis and Pandas.
 Your task is to write a single Python function `def solve(dfs: dict[str, pd.DataFrame]) -> Any:` that precisely answers the user's question using the provided DataFrames.
 
 CORE PRINCIPLES:
-1. Exact Computation & Vectorized Pandas:
-   - Write clean, vectorized pandas/numpy code. Keep it direct and concise (under 35 lines) without long commentary or duplicate helper functions.
-   - Do not hardcode or hallucinate answers. Return ONLY the computed final value.
-2. Structure, Hierarchy & Substring Matching:
-   - Composite headers and hierarchical row categories are joined by ' | ' (e.g. 'Main Category | Subcategory').
-   - When matching column names or row categories, ALWAYS lowercase both sides: `if pattern.lower() in text.lower():` or use `re.search(pattern, text, re.IGNORECASE)`.
-   - Substring Collisions: Remember that 'men' is inside 'women', and 'male' is inside 'female'. Always match 'women'/'female' before 'men'/'male', or use word boundaries (r'\\bmen\\b', r'\\bmale\\b').
-   - Distinguish data rows from aggregate/summary rows ('Total', 'All', 'Average', 'Subtotal'):
-     * When finding min/max, ranking, or comparing individual categories, exclude summary/Total rows.
-     * When asked for the overall total/sum across all categories or age groups, check if an aggregate/summary row already exists in the table to retrieve it directly and avoid double-counting.
-     * When searching for category rows (e.g. an age group) to answer an overall question across the population, capture the FIRST occurrence in the table (e.g. `df[mask].iloc[0]` or check `if target is None: target = ...`), because overall totals appear before demographic breakdowns (Men, Women, Race).
+1. Multilingual Understanding & Strict Output Compliance:
+   - The user query may be in English, Vietnamese, French, Korean, Chinese, or other languages.
+   - Answer strictly according to the format asked in the query:
+     * If asking for an integer without commas or units -> return int or comma-separated ints as requested.
+     * If asking for 1, 2, or 3 decimal places -> return round(val, 1), round(val, 2), or round(val, 3) (or formatted float string).
+     * If asking for Yes/No (or in other languages: Có/Không, Oui/Non, 是/否, 예/아니오) -> return 'Yes' or 'No'.
+     * If asking for only the year / fiscal year -> return the 4-digit year as int or string (e.g. 1954, 2013).
+     * If asking for a ranking or ordered list -> return comma-separated names in the exact order requested.
+     * If asking for a composite output e.g. `group, difference` or `year, decrease` or `table_id, revenue` -> return tuple or string `f"{item1}, {item2}"`.
+
+2. Hierarchical Structure, Indent Levels & Substring Matching:
+   - Composite column headers and hierarchical row categories are joined by ' | ' (e.g. 'Main | Subcategory').
+   - Column 0 vs Column 1: If Column 0 is 'Indent Level' (numeric integers 0, 1, 2...), the item/category names are in Column 1 ('Item and group').
+     * Indent 0 = top-level, Indent 1 = category, Indent 2 = subcategory.
+     * To find categories directly under a parent category (e.g. directly under 'Housing' with indent 1), look for rows that appear after 'Housing' with indent == parent_indent + 1, stopping before the next item with indent <= parent_indent.
+   - Section headers in Column 0: When tables have demographic/activity sections (e.g. 'Own household children 6-17, none younger | Housework'), match using `str.contains(...)` with `case=False, na=False` or check `pattern.lower() in str(val).lower()`.
+   - Substring Collisions: Remember 'men' is inside 'women', and 'male' is inside 'female'. Always match 'women'/'female' before 'men'/'male', or use word boundaries (r'\\bmen\\b', r'\\bmale\\b').
+
 3. Safe Numeric Conversion & Cleaning:
-   - Report values in the table's native units as displayed (do not multiply or scale numbers unless the query explicitly asks for a specific scaled unit).
-   - Safely convert series/cells to numeric: remove footnotes in brackets/parentheses (`re.sub(r'\\(.*?\\)|\\[.*?\\]', '', str(val))`) and strip non-numeric symbols (`re.sub(r'[^\\d.-]', '', s)`). NEVER make parentheses optional (e.g. do NOT use `\\(?\\d+\\)?` as that strips data digits).
-   - For scalar strings: use `re.sub(r'\\(.*?\\)|\\[.*?\\]', '', str(val))` and `re.sub(r'[^\\d.-]', '', s)`. (Note: built-in `str.replace` does NOT take `regex=True`, use `re.sub`).
-   - In pandas: `pd.to_numeric(s.astype(str).str.replace(r'\\(.*?\\)|\\[.*?\\]', '', regex=True).str.replace(r'[^\\d.-]', '', regex=True), errors='coerce')`.
-4. Row/Column Aggregation:
-   - When asked for average or total across categories that span columns for a row, select the data columns (`row.iloc[1:]`), convert to numeric, and take `.mean()` or `.sum()`.
-5. Candidate Ranking & List Formatting:
-   - When ranking or listing specific candidate names explicitly provided in the question (e.g. 'Agriculture, Manufacturing, and Construction'), return the exact candidate strings from the question in the resulting comma-separated string, not the longer or modified table header strings.
-6. Temporal & Age Reasoning:
-   - When identifying oldest/youngest entities or calculating age, if both a Birth Date and an Event/Record/Admission Date exist in the table, determine age as elapsed duration from birth date to that event date (`event_date - birth_date`). Parse all dates using `pd.to_datetime(...)`.
-7. Strict Query Compliance:
-   - If the question asks for Yes/No, return 'Yes' or 'No'.
-   - If the question asks for integer(s), return int or comma-separated integers as requested.
-   - If rounded to N decimal places, return round(val, N).
-8. Execution Safety:
-   - Enclose the code in ```python ... ``` blocks.
+   - Values in the table may be strings containing commas (e.g. '58,176'), currency ('$851'), percent ('10%'), negatives in parentheses '(1.5)' -> -1.5, or missing markers '..' / '-'.
+   - Clean safely in pandas:
+     `pd.to_numeric(s.astype(str).str.replace(r'[\$,%]', '', regex=True).str.replace(r'^\((.*?)\)$', r'-\1', regex=True).str.replace(',', '', regex=False), errors='coerce')`
+   - In native Python:
+     `def to_num(val): s = re.sub(r'[\$,%]', '', str(val)).replace(',', '').strip(); return float('-' + s[1:-1]) if s.startswith('(') and s.endswith(')') else float(s)`
+   - Native Units: Report values in the table's native units as displayed (do not multiply by 1000 unless explicitly requested).
+
+4. Aggregate vs Category Rows:
+   - When finding min/max, ranking, or calculating differences across categories/industries/groups, EXCLUDE summary/Total rows (e.g. 'Total', 'All', 'Average', 'Subtotal', 'All industries').
+   - When asked for the overall total/sum across all groups or categories, if an aggregate row already exists (e.g. 'Total', 'Total, all activities', 'Total, 16 years and over'), retrieve it directly to avoid double-counting.
+
+5. Temporal & Age Reasoning:
+   - When identifying oldest/youngest entities or calculating age, if both a Birth Date and an Admission/Event Date exist, age is elapsed duration: `(pd.to_datetime(event_date) - pd.to_datetime(birth_date)).dt.days`.
+
+6. Execution Safety & Code Style:
+   - Write clean, vectorized, self-contained pandas/numpy code. Keep it concise (under 40 lines).
+   - Enclose the code strictly in ```python ... ``` blocks.
+   - Do NOT hardcode or hallucinate answers. Return ONLY the computed final value.
 """
 
 
 def execute_code_safely(code: str, dfs: Dict[str, pd.DataFrame]) -> Tuple[Any, Optional[str]]:
     """Executes the generated solve(dfs) function in a sandboxed local scope."""
-    # Robust code fence extraction
     match = re.search(r"```(?:python)?\s*(.*?)\s*```", code, flags=re.DOTALL)
     if match:
         clean_code = match.group(1)
@@ -75,13 +96,15 @@ def execute_code_safely(code: str, dfs: Dict[str, pd.DataFrame]) -> Tuple[Any, O
         "re": re,
         "math": math,
         "datetime": datetime,
+        "itertools": itertools,
+        "collections": collections,
+        "unicodedata": unicodedata,
         "Any": Any,
         "List": List,
         "Dict": Dict,
         "Tuple": Tuple,
         "Optional": Optional,
         "Union": Union,
-        "typing": typing,
     }
 
     try:
@@ -95,24 +118,6 @@ def execute_code_safely(code: str, dfs: Dict[str, pd.DataFrame]) -> Tuple[Any, O
         return None, err_msg
 
 
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_DEFAULT_MODEL = "qwen/qwen3.8-27b"
-
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = os.getenv("MODEL_ID", "qwen/qwen3.7-flash")
-
-
-TOKEN_STATS = {
-    "prompt_tokens": 0,
-    "completion_tokens": 0,
-    "total_tokens": 0,
-    "call_count": 0,
-    "last_prompt_tokens": 0,
-    "last_completion_tokens": 0,
-    "last_total_tokens": 0,
-}
-
-
 def query_llm(
     prompt: str,
     api_key: Optional[str] = None,
@@ -120,11 +125,11 @@ def query_llm(
     provider: Optional[str] = None,
     temperature: float = 0.0,
 ) -> str:
-    """Unified LLM caller supporting both OpenRouter (competition default) and Groq (free development)."""
+    """Unified LLM caller supporting both OpenRouter (competition default) and Groq (development testing)."""
     groq_key = os.getenv("GROQ_API_KEY", "")
     openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
 
-    # Auto-detect or select provider (Competition default: OpenRouter)
+    # Auto-detect or select provider
     if provider == "groq":
         target_provider = "groq"
     elif provider == "openrouter":
@@ -139,15 +144,15 @@ def query_llm(
     if target_provider == "groq":
         url = GROQ_URL
         key = api_key or groq_key
-        target_model = model or os.getenv("MODEL_ID") or GROQ_DEFAULT_MODEL
+        target_model = model or os.getenv("MODEL_ID") or DEFAULT_GROQ_MODEL
         if not key:
-            raise ValueError("GROQ_API_KEY is not set.")
+            raise ValueError("GROQ_API_KEY is not set. Please export GROQ_API_KEY or set in .env")
     else:
         url = OPENROUTER_URL
         key = api_key or openrouter_key
-        target_model = model or os.getenv("MODEL_ID") or DEFAULT_MODEL
+        target_model = model or os.getenv("MODEL_ID") or DEFAULT_OPENROUTER_MODEL
         if not key:
-            raise ValueError("OPENROUTER_API_KEY is not set.")
+            raise ValueError("OPENROUTER_API_KEY is not set. Please export OPENROUTER_API_KEY or set in .env")
 
     headers = {
         "Authorization": f"Bearer {key}",
@@ -171,7 +176,7 @@ def query_llm(
                 target_provider = "groq"
                 url = GROQ_URL
                 headers["Authorization"] = f"Bearer {groq_key}"
-                payload["model"] = os.getenv("GROQ_MODEL_ID") or GROQ_DEFAULT_MODEL
+                payload["model"] = os.getenv("GROQ_MODEL_ID") or DEFAULT_GROQ_MODEL
                 continue
 
             if resp.status_code == 429:
@@ -187,6 +192,7 @@ def query_llm(
                 print(f"[{target_provider.upper()} RateLimit] 429 received, waiting {wait_time:.1f}s until token reset...")
                 time.sleep(wait_time)
                 continue
+
             resp.raise_for_status()
             data = resp.json()
             usage = data.get("usage", {})
