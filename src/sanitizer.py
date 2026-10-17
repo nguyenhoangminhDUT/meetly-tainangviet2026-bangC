@@ -98,8 +98,8 @@ def sanitize_answer(raw_answer: Any, query: str = "") -> str:
     if target_decimals is not None:
         fmt = f"{{:.{target_decimals}f}}"
 
-        # Check if query expects multiple numbers (e.g. `men, women` or `report both rates`)
-        if any(k in q_lower for k in ["men, women", "both rates", "two numbers", "report both", "two decimal places and separating"]):
+        # Check if query expects multiple numbers (e.g. `report both rates`, `for both groups`, `separating by comma`)
+        if any(k in q_lower for k in ["both", "two rates", "two numbers", "report both", "separating", "for each"]):
             num_tokens = re.findall(r"-?\d+\.?\d*", text.replace(",", " "))
             if len(num_tokens) >= 2:
                 try:
@@ -111,7 +111,7 @@ def sanitize_answer(raw_answer: Any, query: str = "") -> str:
         if "," in text:
             parts = [p.strip() for p in text.split(",")]
             # Only format all parts if the query explicitly asks for both/all rates/numbers
-            format_all = any(k in q_lower for k in ["men, women", "both rates", "two numbers", "report both", "two decimal places and separating"])
+            format_all = any(k in q_lower for k in ["both", "two rates", "two numbers", "report both", "separating", "for each"])
             formatted_parts = []
             for p in parts:
                 p_clean = p.replace("$", "").replace("%", "").strip()
@@ -172,7 +172,7 @@ def sanitize_answer(raw_answer: Any, query: str = "") -> str:
         nums = re.findall(r"-?\d+", text)
         if len(nums) >= 2 and any(k in q_lower for k in [
             "two integers", "year, decrease", "year, total", "year, increase",
-            "order `", "1 to 34 hours", "as two integers", "as integers without"
+            "order `", "as two integers", "as integers without"
         ]):
             return ", ".join(nums[:2])
 
