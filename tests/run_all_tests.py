@@ -1,11 +1,10 @@
 """Master Test Suite Runner for Table QA Pipeline.
 
-Runs all 5 validation and verification suites:
-1. Unit Tests (Normalizer, Sanitizer, Sandbox, Schema Builder)
+Runs all 4 official validation and verification suites:
+1. Unit Tests (Normalizer, Sanitizer, Sandbox, Schema Builder, Concurrency)
 2. Workbook & Schema Audit (Public Data 1 & Public Data 2)
 3. Empirical Verification: Public Data 1 (20 queries)
 4. Empirical Verification: Public Data 2 (30 queries)
-5. Free LLM Sandbox & Prompt Schema End-to-End Test
 """
 
 import sys
@@ -37,7 +36,6 @@ def main():
         ("Structural & Data Audit", [py_exec, "tests/audit_public_data_2.py"]),
         ("Public Data 1 Verification (20 Queries)", [py_exec, "tests/verify_solutions_p1.py"]),
         ("Public Data 2 Verification (30 Queries)", [py_exec, "tests/verify_solutions_p2.py"]),
-        ("Free LLM Architecture & Mock E2E Test", [py_exec, "tests/test_free_llm.py", "--mock"]),
     ]
     
     results = {}

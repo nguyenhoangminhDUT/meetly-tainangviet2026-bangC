@@ -9,10 +9,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.normalizer import load_normalized_workbook, make_unique_columns, clean_cell_value, is_num_cell
+from src.normalizer import load_normalized_workbook, make_unique_columns, clean_cell_value, is_num_cell, extract_worksheet_tables
 from src.sanitizer import sanitize_answer, strip_thousands_separators
 from src.schema_builder import build_schema_summary, extract_keywords
-from src.solver import execute_code_safely
+from src.solver import execute_code_safely, is_empty_or_meaningless, get_column_samples_hint
+from src.evaluator import compute_levenshtein, normalize_for_eval, compute_relative_numeric_error
 
 
 def test_unique_columns():
@@ -71,8 +72,16 @@ def test_multilingual_sanitizer():
     assert sanitize_answer("yes", "Answer with only Yes or No.") == "Yes"
     assert sanitize_answer("no", "Answer with only Yes or No.") == "No"
 
-    # Only last name
+    # Only last name (Multicultural: English last name vs Vietnamese surname)
     assert sanitize_answer("Minh Thi Ngo", "Answer with only the last name.") == "Ngo"
+    assert sanitize_answer("John Smith", "Answer with only the last name.") == "Smith"
+    assert sanitize_answer("Nguyễn Văn An", "Chỉ họ của người đó:") == "Nguyễn"
+    assert sanitize_answer("Tran Minh Tu", "Chỉ ghi họ:") == "Tran"
+    assert sanitize_answer("Ngo", "Answer with only the last name.") == "Ngo"
+
+    # Tuple / List preservation
+    assert sanitize_answer((2020, 9743), "as integers without commas or units") == "2020, 9743"
+    assert sanitize_answer(["table_1", 1307], "as integers without commas or units") == "table_1, 1307"
 
 
 def test_schema_builder_keywords():
@@ -111,6 +120,73 @@ def test_all_public_workbooks_normalization():
                 assert len(df.columns) == len(set(df.columns)), f"Duplicate columns in {f.name}::{sname}"
 
 
+def test_reflection_helpers():
+    import numpy as np
+    assert is_empty_or_meaningless(None) is True
+    assert is_empty_or_meaningless("") is True
+    assert is_empty_or_meaningless("   ") is True
+    assert is_empty_or_meaningless(np.nan) is True
+    assert is_empty_or_meaningless("nan") is True
+    assert is_empty_or_meaningless("None") is True
+    assert is_empty_or_meaningless([]) is True
+    assert is_empty_or_meaningless({}) is True
+    assert is_empty_or_meaningless(pd.DataFrame()) is True
+    assert is_empty_or_meaningless("Valid Answer") is False
+    assert is_empty_or_meaningless(42) is False
+    assert is_empty_or_meaningless(0) is False
+
+    test_dfs = {
+        "Sheet1": pd.DataFrame({
+            "Category": ["Agriculture", "Manufacturing", "Services"],
+            "Value": [100, 200, 300]
+        })
+    }
+    hints = get_column_samples_hint(test_dfs)
+    assert "Category" in hints
+    assert "Agriculture" in hints
+
+
+def test_evaluator_diagnostics():
+    assert compute_levenshtein("kitten", "sitting") == 3
+    assert compute_levenshtein("equal", "equal") == 0
+    assert normalize_for_eval("11.0") == "11"
+    assert normalize_for_eval("$4.70") == "4.7"
+    assert normalize_for_eval("Yes.") == "yes"
+    assert compute_relative_numeric_error("100", "100") == 0.0
+    assert abs(compute_relative_numeric_error("105", "100") - 0.05) < 1e-5
+
+
+def test_multi_table_extraction():
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "MultiSheet"
+    
+    # Table 1: rows 1-3
+    ws.cell(1, 1, "Item")
+    ws.cell(1, 2, "Sales")
+    ws.cell(2, 1, "Apples")
+    ws.cell(2, 2, 100)
+    ws.cell(3, 1, "Oranges")
+    ws.cell(3, 2, 200)
+
+    # Empty spacer rows 4, 5
+    # Table 2: rows 6-8
+    ws.cell(6, 1, "Region")
+    ws.cell(6, 2, "Profit")
+    ws.cell(7, 1, "North")
+    ws.cell(7, 2, 50)
+    ws.cell(8, 1, "South")
+    ws.cell(8, 2, 80)
+
+    tables = extract_worksheet_tables(ws, sheet_name="MultiSheet")
+    assert len(tables) == 2
+    assert "MultiSheet" in tables
+    assert "MultiSheet_sub2" in tables
+    assert "Sales" in tables["MultiSheet"].columns
+    assert "Profit" in tables["MultiSheet_sub2"].columns
+
+
 if __name__ == "__main__":
     print("Running test suite...")
     test_unique_columns()
@@ -120,4 +196,7 @@ if __name__ == "__main__":
     test_schema_builder_keywords()
     test_sandboxed_code_execution()
     test_all_public_workbooks_normalization()
-    print(">>> ALL 7 TEST SUITES PASSED FLAWLESSLY! <<<")
+    test_reflection_helpers()
+    test_evaluator_diagnostics()
+    test_multi_table_extraction()
+    print(">>> ALL 10 TEST SUITES PASSED FLAWLESSLY! <<<")

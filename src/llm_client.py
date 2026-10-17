@@ -28,6 +28,8 @@ OPENROUTER_ENDPOINT = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/ap
 PRICE_PROMPT_PER_M = 0.03
 PRICE_COMPLETION_PER_M = 0.13
 
+import threading
+
 # Global Telemetry & Token Tracking
 TOKEN_STATS: Dict[str, Any] = {
     "prompt_tokens": 0,
@@ -38,19 +40,20 @@ TOKEN_STATS: Dict[str, Any] = {
     "last_completion_tokens": 0,
     "last_total_tokens": 0,
 }
+_TOKEN_LOCK = threading.Lock()
 
-
-# Global Persistent Session for HTTP Keep-Alive (Saves ~300ms per request)
-_GLOBAL_SESSION: Optional[requests.Session] = None
+# Thread-Local Persistent Sessions for Safe Concurrent Execution
+_THREAD_LOCAL = threading.local()
 
 def get_http_session() -> requests.Session:
-    global _GLOBAL_SESSION
-    if _GLOBAL_SESSION is None:
-        _GLOBAL_SESSION = requests.Session()
+    """Returns a thread-local requests.Session configured with connection pooling."""
+    if not hasattr(_THREAD_LOCAL, "session") or _THREAD_LOCAL.session is None:
+        session = requests.Session()
         adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=1)
-        _GLOBAL_SESSION.mount("https://", adapter)
-        _GLOBAL_SESSION.mount("http://", adapter)
-    return _GLOBAL_SESSION
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        _THREAD_LOCAL.session = session
+    return _THREAD_LOCAL.session
 
 
 class CompetitionLLMClient:
@@ -69,14 +72,17 @@ class CompetitionLLMClient:
         self.endpoint = endpoint
         self.timeout = timeout
         self.max_retries = max_retries
-        self.session = get_http_session()
+
+    @property
+    def session(self) -> requests.Session:
+        return get_http_session()
 
     def query(
         self,
         prompt: str,
         system_prompt: Optional[str] = None,
         temperature: float = 0.0,
-        max_tokens: int = 350,
+        max_tokens: int = 300,
     ) -> str:
         """Sends a query to Qwen3.7 Flash on OpenRouter with automatic backoff retry."""
         if not self.api_key:
@@ -147,13 +153,14 @@ class CompetitionLLMClient:
                 c_tok = usage.get("completion_tokens", 0)
                 t_tok = usage.get("total_tokens", p_tok + c_tok)
 
-                TOKEN_STATS["prompt_tokens"] += p_tok
-                TOKEN_STATS["completion_tokens"] += c_tok
-                TOKEN_STATS["total_tokens"] += t_tok
-                TOKEN_STATS["call_count"] += 1
-                TOKEN_STATS["last_prompt_tokens"] = p_tok
-                TOKEN_STATS["last_completion_tokens"] = c_tok
-                TOKEN_STATS["last_total_tokens"] = t_tok
+                with _TOKEN_LOCK:
+                    TOKEN_STATS["prompt_tokens"] += p_tok
+                    TOKEN_STATS["completion_tokens"] += c_tok
+                    TOKEN_STATS["total_tokens"] += t_tok
+                    TOKEN_STATS["call_count"] += 1
+                    TOKEN_STATS["last_prompt_tokens"] = p_tok
+                    TOKEN_STATS["last_completion_tokens"] = c_tok
+                    TOKEN_STATS["last_total_tokens"] = t_tok
 
                 return data["choices"][0]["message"]["content"]
 

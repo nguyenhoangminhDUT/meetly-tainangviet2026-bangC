@@ -5,17 +5,31 @@ Competition Execution Standard (Tài Năng Việt 2026 - Bảng C):
     python -m src.main --xlsx_dir <path_to_xlsx> --queries <path_to_queries.json> --output submission.csv
 - Model: Qwen3.7 Flash (`qwen/qwen3.7-flash`) via OpenRouter API
 - Authentication: OPENROUTER_API_KEY environment variable or --api_key argument
+- Performance: Pre-warmed workbook cache, concurrent thread execution (--workers 4)
 - Output: Standard submission.csv with exactly two columns: `id,answer`
 """
 
 import argparse
+import concurrent.futures
 import json
 import os
 import sys
+import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -25,14 +39,16 @@ try:
     from src.normalizer import load_normalized_workbook
     from src.sanitizer import sanitize_answer
     from src.schema_builder import build_schema_summary
-    from src.solver import query_llm, execute_code_safely
+    from src.solver import query_llm, execute_code_safely, is_empty_or_meaningless, get_column_samples_hint
     from src.llm_client import COMPETITION_MODEL_ID, TOKEN_STATS, get_token_usage_report
+    from src.evaluator import compute_metrics_from_maps
 except ImportError:
     from normalizer import load_normalized_workbook
     from sanitizer import sanitize_answer
     from schema_builder import build_schema_summary
-    from solver import query_llm, execute_code_safely
+    from solver import query_llm, execute_code_safely, is_empty_or_meaningless, get_column_samples_hint
     from llm_client import COMPETITION_MODEL_ID, TOKEN_STATS, get_token_usage_report
+    from evaluator import compute_metrics_from_maps
 
 
 class OutputLogger:
@@ -59,23 +75,27 @@ def load_ground_truth(queries_path: Path, answers_arg: Optional[str] = None) -> 
     candidates: List[Path] = []
     if answers_arg:
         candidates.append(Path(answers_arg))
-    candidates.append(queries_path.parent / "answers.json")
-    candidates.append(queries_path.parent / "sample_submission.csv")
+    candidates.extend([
+        queries_path.parent / "answers.json",
+        queries_path.parent / "sample_submission.csv",
+        queries_path.parent / "sample_answers.csv",
+    ])
 
-    for path in candidates:
-        if path.exists():
-            if path.suffix.lower() == ".json":
+    for p in candidates:
+        if p.exists():
+            if p.suffix.lower() == ".json":
                 try:
-                    with open(path, "r", encoding="utf-8") as f:
+                    with open(p, "r", encoding="utf-8") as f:
                         data = json.load(f)
                     for item in data:
-                        gt_map[str(item.get("id"))] = str(item.get("answer", "")).strip()
+                        if "id" in item and "answer" in item:
+                            gt_map[str(item["id"])] = str(item["answer"]).strip()
                     break
                 except Exception:
                     pass
-            elif path.suffix.lower() == ".csv":
+            elif p.suffix.lower() == ".csv":
                 try:
-                    df = pd.read_csv(path)
+                    df = pd.read_csv(p)
                     ans_col = "answer" if "answer" in df.columns else df.columns[1]
                     id_col = "id" if "id" in df.columns else df.columns[0]
                     for _, row in df.iterrows():
@@ -88,31 +108,47 @@ def load_ground_truth(queries_path: Path, answers_arg: Optional[str] = None) -> 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Meetly Spreadsheet QA Runner (Tài Năng Việt 2026 - Bảng C)",
+        description="Meetly Spreadsheet QA Runner (Tài Năng Việt 2026 - Bảng C - Đội AI26C0079)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    # Competition required parameters
-    parser.add_argument("--xlsx_dir", type=str, required=True, help="Directory containing input .xlsx spreadsheet files")
-    parser.add_argument("--queries", type=str, required=True, help="Path to input queries.json file")
-    parser.add_argument("--output", type=str, default="submission.csv", help="Path to write output submission.csv")
+    # Competition required parameters with aliases
+    parser.add_argument("--xlsx_dir", "--input_dir", "--data_dir", dest="xlsx_dir", type=str, default=None, help="Directory containing input .xlsx spreadsheet files")
+    parser.add_argument("--queries", "--queries_path", "--query_file", dest="queries", type=str, default=None, help="Path to input queries.json file")
+    parser.add_argument("--output", "--output_path", "--out", dest="output", type=str, default=None, help="Path to write output submission.csv (default: submission.csv)")
 
     # Model and connection settings
     parser.add_argument("--api_key", type=str, default=None, help="OpenRouter API key (defaults to OPENROUTER_API_KEY env var)")
     parser.add_argument("--model", type=str, default=COMPETITION_MODEL_ID, help="LLM model identifier")
     parser.add_argument("--provider", type=str, default="openrouter", choices=["openrouter", "groq", "gemini", "ollama"], help="LLM provider")
 
+    # High-Performance Concurrency
+    parser.add_argument("--workers", type=int, default=4, help="Number of concurrent worker threads for parallel question answering")
+
     # Evaluation and logging utilities
     parser.add_argument("--eval", action="store_true", help="Evaluate against ground truth answers if present in data directory")
     parser.add_argument("--answers", type=str, default=None, help="Path to explicit answers file for evaluation")
     parser.add_argument("--log_file", type=str, default=None, help="Optional log file path")
+
+    # Optional Positional Arguments Fallback (for docker entrypoint without flags)
+    parser.add_argument("pos_xlsx_dir", nargs="?", default=None, help="Positional fallback for xlsx directory")
+    parser.add_argument("pos_queries", nargs="?", default=None, help="Positional fallback for queries file")
+    parser.add_argument("pos_output", nargs="?", default=None, help="Positional fallback for output file")
+
     args = parser.parse_args()
+
+    actual_xlsx_dir = args.xlsx_dir or args.pos_xlsx_dir
+    actual_queries = args.queries or args.pos_queries
+    actual_output = args.output or args.pos_output or "submission.csv"
+
+    if not actual_xlsx_dir or not actual_queries:
+        parser.error("Both xlsx_dir (via --xlsx_dir / --input_dir / positional) and queries (via --queries / positional) are required.")
 
     if args.log_file:
         sys.stdout = OutputLogger(args.log_file)
 
-    xlsx_dir = Path(args.xlsx_dir)
-    queries_path = Path(args.queries)
-    output_path = Path(args.output)
+    xlsx_dir = Path(actual_xlsx_dir)
+    queries_path = Path(actual_queries)
+    output_path = Path(actual_output)
 
     if not xlsx_dir.exists():
         print(f"Error: xlsx_dir directory does not exist: {xlsx_dir}", file=sys.stderr)
@@ -134,104 +170,167 @@ def main():
     print(f"  • Target Output       : {output_path}")
     print(f"  • LLM Provider        : {args.provider}")
     print(f"  • LLM Model           : {args.model}")
+    print(f"  • Concurrent Workers  : {args.workers}")
     print("=" * 80)
 
-    results: List[Dict[str, str]] = []
-    correct_count = 0
-    total_eval = 0
-
-    # Cache loaded workbooks to avoid redundant disk I/O when multiple queries share a workbook
+    # 1. Pre-warm Workbook Cache to separate Disk I/O from network queries and prevent thread contention
+    unique_files = list(dict.fromkeys(
+        q.get("file_name") or q.get("xlsx_file", "")
+        for q in queries
+        if (q.get("file_name") or q.get("xlsx_file"))
+    ))
+    print(f"[*] Pre-warming Workbook Cache ({len(unique_files)} unique workbooks)...")
+    t_warm = time.time()
     workbook_cache: Dict[str, Dict[str, pd.DataFrame]] = {}
+    for fname in unique_files:
+        excel_path = xlsx_dir / fname
+        if excel_path.exists():
+            workbook_cache[fname] = load_normalized_workbook(excel_path)
+        else:
+            print(f"    [!] Warning: Spreadsheet file not found: {excel_path}")
+    print(f"    -> Normalized & cached {len(workbook_cache)} workbooks in {time.time() - t_warm:.2f}s\n")
 
-    start_total_time = time.time()
+    print_lock = threading.Lock()
 
-    for idx, item in enumerate(queries, start=1):
+    def process_query_item(item_tuple: Tuple[int, Dict[str, Any]]) -> Dict[str, Any]:
+        idx, item = item_tuple
         q_id = str(item["id"])
         file_name = item.get("file_name") or item.get("xlsx_file", "")
         query_text = str(item.get("query", "")).strip()
-        excel_path = xlsx_dir / file_name
-
-        print(f"\n[{idx:02d}/{len(queries):02d}] Processing Query ID: {q_id} | Workbook: {file_name}")
-        print(f"     Q: \"{query_text}\"")
 
         q_t0 = time.time()
         final_ans = ""
+        log_lines = [
+            f"[{idx:02d}/{len(queries):02d}] Processing Query ID: {q_id} | Workbook: {file_name}",
+            f"     Q: \"{query_text}\"",
+        ]
 
         try:
-            # 1. Load & Normalize Spreadsheet (Cached)
-            if file_name not in workbook_cache:
+            # Retrieve normalized sheets from pre-warmed cache (or load on demand)
+            dfs = workbook_cache.get(file_name)
+            if dfs is None:
+                excel_path = xlsx_dir / file_name
                 if not excel_path.exists():
                     raise FileNotFoundError(f"Spreadsheet file not found: {excel_path}")
-                workbook_cache[file_name] = load_normalized_workbook(excel_path)
-            dfs = workbook_cache[file_name]
+                dfs = load_normalized_workbook(excel_path)
 
-            # 2. Extract Token-Optimized Schema Summary
+            # Extract Token-Optimized Schema Summary
             schema_summary = build_schema_summary(dfs, query_text)
 
-            # 3. Construct PoT Reasoning Prompt
+            # Construct PoT Reasoning Prompt
             prompt = f"""File: {file_name}
 Sheets data overview:
 {schema_summary}
 
 User Question: {query_text}
 
-Write a python function `def solve(dfs: dict[str, pd.DataFrame]) -> Any:` to compute and return the answer.
+Write a python function `def solve(dfs: dict[str, pd.DataFrame]) -> Any:` to answer this question.
 """
-            # 4. Invoke LLM for Python Code Generation
+
+            # Invoke LLM for Python Code Generation
             kwargs: Dict[str, Any] = {
                 "api_key": args.api_key,
                 "model": args.model,
                 "provider": args.provider,
+                "temperature": 0.0,
+                "max_tokens": 300,
             }
 
             code = query_llm(prompt, **kwargs)
             raw_ans, err = execute_code_safely(code, dfs)
 
-            # 5. Self-Correction Reflection Loop on Execution Exceptions (Max 2 retries)
+            # Self-Correction Reflection Loop on Execution Exceptions OR Empty/NaN Results (Max 2 retries)
             retries = 0
-            while err and retries < 2:
+            while retries < 2:
+                if err:
+                    short_err = "\n".join(err.strip().splitlines()[-4:])
+                    fail_desc = f"Sandbox execution error:\n{short_err}"
+                    trigger_label = f"Exception: {short_err.splitlines()[-1]}"
+                elif is_empty_or_meaningless(raw_ans):
+                    sample_hints = get_column_samples_hint(dfs)
+                    fail_desc = (
+                        f"Function returned empty/NaN/invalid result ({raw_ans!r}).\n"
+                        f"Possible Causes & Fixes:\n"
+                        f"1. A DataFrame filtering condition (e.g. .str.contains or ==) matched 0 rows due to case/spacing. "
+                        f"Use flexible matching: `.str.contains(..., case=False, na=False)` or `.str.strip().str.lower()`.\n"
+                        f"2. A numeric calculation failed or produced NaN because strings contain symbols ('$', '%', ','). "
+                        f"Strip symbols before converting to numeric: `.str.replace(r'[$%,]', '', regex=True)`.\n\n"
+                        f"Sample column values for reference:\n{sample_hints}"
+                    )
+                    trigger_label = f"Empty/NaN result ({raw_ans!r})"
+                else:
+                    # Valid non-empty answer produced
+                    break
+
                 retries += 1
-                short_err = "\n".join(err.strip().splitlines()[-4:])
-                print(f"     [!] Sandbox execution error (retry {retries}/2): {short_err}")
+                log_lines.append(f"     [!] Reflection trigger ({retries}/2): {trigger_label}")
                 reflection_prompt = f"""File: {file_name}
 Sheets data overview:
 {schema_summary}
 
 User Question: {query_text}
 
-Your previous code produced this error:
-{short_err}
+Your previous code produced this issue:
+{fail_desc}
 
-Please fix the error and write a correct python function `def solve(dfs: dict[str, pd.DataFrame]) -> Any:`
+Please fix the error or filtering condition and write a correct python function `def solve(dfs: dict[str, pd.DataFrame]) -> Any:`
 """
                 code = query_llm(reflection_prompt, **kwargs)
                 raw_ans, err = execute_code_safely(code, dfs)
 
-            # 6. Apply Exact Match Post-Processing Sanitizer
+            # Apply Exact Match Post-Processing Sanitizer
             if err:
-                print(f"     [!] Unresolved execution error: {err.strip().splitlines()[-1]}")
+                log_lines.append(f"     [!] Unresolved execution error: {err.strip().splitlines()[-1]}")
+                final_ans = ""
+            elif is_empty_or_meaningless(raw_ans):
+                log_lines.append(f"     [!] Unresolved empty/NaN result: {raw_ans!r}")
                 final_ans = ""
             else:
                 final_ans = sanitize_answer(raw_ans, query_text)
 
         except Exception as e:
-            print(f"     [!] Processing exception for Query {q_id}: {e}")
+            log_lines.append(f"     [!] Processing exception for Query {q_id}: {e}")
             final_ans = ""
 
         elapsed = time.time() - q_t0
-        print(f"     -> Answer : '{final_ans}' ({elapsed:.2f}s)")
+        log_lines.append(f"     -> Answer : '{final_ans}' ({elapsed:.2f}s)")
 
-        # Optional live evaluation if ground truth is present
         if q_id in gt_map:
-            total_eval += 1
             target = gt_map[q_id]
             is_match = (str(final_ans).strip() == str(target).strip())
             status = "✅ PASS" if is_match else "❌ FAIL"
-            print(f"     -> Target : '{target}' | Status: {status}")
-            if is_match:
-                correct_count += 1
+            log_lines.append(f"     -> Target : '{target}' | Status: {status}")
 
-        results.append({"id": q_id, "answer": final_ans})
+        with print_lock:
+            print("\n" + "\n".join(log_lines))
+
+        return {
+            "index": idx,
+            "id": q_id,
+            "answer": final_ans,
+            "elapsed": elapsed,
+        }
+
+    start_total_time = time.time()
+    raw_results: List[Dict[str, Any]] = []
+
+    # Parallel Execution with ThreadPoolExecutor
+    if args.workers > 1 and len(queries) > 1:
+        print(f"[*] Dispatching {len(queries)} queries across {args.workers} concurrent worker threads...")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
+            future_to_idx = {
+                executor.submit(process_query_item, (idx, item)): idx
+                for idx, item in enumerate(queries, start=1)
+            }
+            for future in concurrent.futures.as_completed(future_to_idx):
+                raw_results.append(future.result())
+    else:
+        for idx, item in enumerate(queries, start=1):
+            raw_results.append(process_query_item((idx, item)))
+
+    # Guarantee 100% original order preservation matching queries.json
+    raw_results.sort(key=lambda r: r["index"])
+    results = [{"id": r["id"], "answer": r["answer"]} for r in raw_results]
 
     # Save output submission.csv
     output_df = pd.DataFrame(results)
@@ -247,9 +346,18 @@ Please fix the error and write a correct python function `def solve(dfs: dict[st
     print(f"  • Submission Output File : {output_path.resolve()}")
     print(f"  • Total Queries Processed: {len(results)}")
     print(f"  • Total Elapsed Time     : {total_time:.2f}s (Avg {total_time/max(1, len(results)):.2f}s / query)")
-    if total_eval > 0:
-        acc = (correct_count / total_eval) * 100.0
-        print(f"  • Exact Match Score      : {correct_count}/{total_eval} ({acc:.1f}%)")
+
+    if gt_map:
+        pred_map = {r["id"]: r["answer"] for r in results}
+        eval_metrics = compute_metrics_from_maps(pred_map, gt_map)
+        print("-" * 80)
+        print("DIAGNOSTIC BENCHMARK EVALUATION:")
+        print(f"  • Strict Exact Match (EM) : {eval_metrics['strict_correct']}/{eval_metrics['total']} ({eval_metrics['strict_accuracy']:.1f}%)")
+        print(f"  • Normalized Match (Norm) : {eval_metrics['norm_correct']}/{eval_metrics['total']} ({eval_metrics['norm_accuracy']:.1f}%)")
+        print(f"  • Avg Edit Similarity     : {eval_metrics['avg_edit_similarity']:.2f}%")
+        print(f"  • Avg Character Error Rate: {eval_metrics['avg_cer']:.4f}")
+        print(f"  • Avg Rel Numeric Error   : {eval_metrics['avg_rne']:.6f} ({eval_metrics['numeric_queries_count']} numeric queries)")
+
     print("-" * 80)
     print("LLM RESOURCE & TOKEN ACCOUNTING:")
     print(f"  • Total API Invocations  : {token_report['call_count']}")

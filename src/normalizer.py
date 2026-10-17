@@ -75,10 +75,10 @@ def make_unique_columns(cols: List[str]) -> List[str]:
     return unique_cols
 
 
-def normalize_worksheet(ws: openpyxl.worksheet.worksheet.Worksheet) -> Optional[pd.DataFrame]:
-    """Converts a single openpyxl worksheet into a cleanly structured pandas DataFrame with unmerged cells."""
+def extract_worksheet_tables(ws: openpyxl.worksheet.worksheet.Worksheet, sheet_name: str = "Sheet") -> Dict[str, pd.DataFrame]:
+    """Converts an openpyxl worksheet into one or multiple DataFrames if multiple distinct tables exist."""
     if ws.max_row is None or ws.max_column is None:
-        return None
+        return {}
 
     max_r = ws.max_row
     max_c = ws.max_column
@@ -98,12 +98,67 @@ def normalize_worksheet(ws: openpyxl.worksheet.worksheet.Worksheet) -> Optional[
             for c in range(min_col, max_col + 1):
                 grid[r - 1][c - 1] = top_left_val
 
-    raw_df = pd.DataFrame(grid).dropna(how="all").dropna(how="all", axis=1)
-    if raw_df.empty:
-        return None
+    # Step 3: Check for multiple table blocks separated by >= 2 completely empty rows
+    # A split is only valid if the preceding block already contained numeric data rows
+    blocks: List[List[List[Any]]] = []
+    curr_block: List[List[Any]] = []
+    curr_num_rows = 0
+    blank_run = 0
 
-    raw_df.reset_index(drop=True, inplace=True)
-    return clean_and_headerize(raw_df)
+    for row in grid:
+        is_blank = all(x is None or str(x).strip() in ['', 'None', 'nan'] for x in row)
+        has_num = any(is_num_cell(x) for x in row)
+        if is_blank:
+            blank_run += 1
+        else:
+            if blank_run >= 2 and curr_num_rows >= 2:
+                # Preceding block has completed its data rows; start a new candidate table block
+                blocks.append(curr_block)
+                curr_block = []
+                curr_num_rows = 0
+            blank_run = 0
+            curr_block.append(row)
+            if has_num:
+                curr_num_rows += 1
+    if curr_block:
+        blocks.append(curr_block)
+
+    # Filter blocks: a block qualifies as an independent table IF it contains numeric data rows
+    table_dfs: List[pd.DataFrame] = []
+    for b in blocks:
+        num_rows = sum(1 for r in b if any(is_num_cell(x) for x in r))
+        if num_rows >= 1:
+            block_df = pd.DataFrame(b).dropna(how="all").dropna(how="all", axis=1)
+            if not block_df.empty:
+                block_df.reset_index(drop=True, inplace=True)
+                clean_df = clean_and_headerize(block_df)
+                if clean_df is not None and not clean_df.empty:
+                    table_dfs.append(clean_df)
+
+    if not table_dfs:
+        # Fallback to single table processing on whole grid
+        raw_df = pd.DataFrame(grid).dropna(how="all").dropna(how="all", axis=1)
+        if raw_df.empty:
+            return {}
+        raw_df.reset_index(drop=True, inplace=True)
+        single_df = clean_and_headerize(raw_df)
+        return {sheet_name: single_df} if single_df is not None and not single_df.empty else {}
+
+    if len(table_dfs) == 1:
+        return {sheet_name: table_dfs[0]}
+
+    # Multiple distinct tables detected on this worksheet!
+    results: Dict[str, pd.DataFrame] = {}
+    for idx, tdf in enumerate(table_dfs, 1):
+        tname = sheet_name if idx == 1 else f"{sheet_name}_sub{idx}"
+        results[tname] = tdf
+    return results
+
+
+def normalize_worksheet(ws: openpyxl.worksheet.worksheet.Worksheet) -> Optional[pd.DataFrame]:
+    """Converts a single openpyxl worksheet into a cleanly structured pandas DataFrame with unmerged cells."""
+    tables = extract_worksheet_tables(ws, sheet_name="Sheet")
+    return list(tables.values())[0] if tables else None
 
 
 def clean_and_headerize(df: pd.DataFrame) -> pd.DataFrame:
@@ -186,14 +241,16 @@ def clean_and_headerize(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_normalized_workbook(file_path: str | Path) -> Dict[str, pd.DataFrame]:
-    """Loads an .xlsx file, resolves all merged cells, and converts each sheet to a normalized DataFrame."""
+    """Loads an .xlsx file, resolves all merged cells, and converts each sheet to one or more normalized DataFrames."""
     wb = openpyxl.load_workbook(file_path, data_only=True)
     sheets_data: Dict[str, pd.DataFrame] = {}
 
-    for sheet_name in wb.sheetnames:
-        ws = wb[sheet_name]
-        df = normalize_worksheet(ws)
-        if df is not None and not df.empty:
-            sheets_data[sheet_name] = df
+    try:
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            tables = extract_worksheet_tables(ws, sheet_name=sheet_name)
+            sheets_data.update(tables)
+    finally:
+        wb.close()
 
     return sheets_data

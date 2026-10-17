@@ -49,9 +49,19 @@ def sanitize_answer(raw_answer: Any, query: str = "") -> str:
     # =========================================================================
     # 2. Only Last Name queries
     # =========================================================================
-    if any(k in q_lower for k in ["only the last name", "last name only", "chỉ họ"]):
+    if any(k in q_lower for k in ["only the last name", "last name only", "chỉ họ", "chỉ ghi họ", "họ của"]):
         tokens = text.split()
         if tokens:
+            vn_surnames = {
+                "nguyen", "nguyễn", "tran", "trần", "le", "lê", "pham", "phạm",
+                "hoang", "hoàng", "huynh", "huỳnh", "phan", "vu", "vũ", "vo", "võ",
+                "dang", "đặng", "bui", "bùi", "do", "đỗ", "ho", "hồ", "ngo", "ngô",
+                "duong", "dương", "ly", "lý", "dinh", "đinh", "dao", "đào", "doan", "đoàn"
+            }
+            is_vi_query = any(k in q_lower for k in ["chỉ họ", "chỉ ghi họ", "họ của", "họ"])
+            first_tok_clean = tokens[0].lower().strip(",. ")
+            if is_vi_query and first_tok_clean in vn_surnames:
+                return tokens[0].strip(",. ")
             return tokens[-1].strip(",. ")
 
     # =========================================================================
@@ -144,6 +154,18 @@ def sanitize_answer(raw_answer: Any, query: str = "") -> str:
     ])
 
     if is_integer_query:
+        # If raw_answer was originally a 2-element tuple/list (e.g. (2020, 9743) or ['table_1', 1307]), preserve structure!
+        if isinstance(raw_answer, (list, tuple)) and len(raw_answer) == 2:
+            formatted_items = []
+            for item in raw_answer:
+                s_item = str(item).strip()
+                s_clean = re.sub(r'[\$,%]', '', s_item).replace(',', '').strip()
+                if re.fullmatch(r'-?\d+', s_clean):
+                    formatted_items.append(s_clean)
+                else:
+                    formatted_items.append(s_item)
+            return ", ".join(formatted_items)
+
         # If text has comma, check if it's a composite with text (e.g. table_1, 1307 or Mexican, 16)
         if "," in text:
             parts = [p.strip() for p in text.split(",")]
@@ -158,11 +180,12 @@ def sanitize_answer(raw_answer: Any, query: str = "") -> str:
                         formatted_parts.append(p)
                 return ", ".join(formatted_parts)
 
-        # Check if query expects multiple integers (e.g. `year, decrease` or `two integers`)
+        # Check if query expects multiple integers
         nums = re.findall(r"-?\d+", text)
         if len(nums) >= 2 and any(k in q_lower for k in [
             "two integers", "year, decrease", "year, total", "year, increase",
-            "order `", "1 to 34 hours", "as two integers", "as integers without"
+            "order `", "1 to 34 hours", "as two integers", "as integers without",
+            "two numbers", "report both", "both integers", "start and end", "hai số nguyên"
         ]):
             return ", ".join(nums[:2])
 

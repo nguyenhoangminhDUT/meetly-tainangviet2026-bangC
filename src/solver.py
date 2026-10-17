@@ -104,6 +104,9 @@ CORE PRINCIPLES:
 
 def execute_code_safely(code: str, dfs: Dict[str, pd.DataFrame]) -> Tuple[Any, Optional[str]]:
     """Executes the generated solve(dfs) function in a sandboxed local scope."""
+    # Deep copy DataFrames to prevent arbitrary code mutations from corrupting workbook cache in concurrent threads
+    safe_dfs = {k: v.copy(deep=True) for k, v in dfs.items()}
+
     match = re.search(r"```(?:python)?\s*(.*?)\s*```", code, flags=re.DOTALL)
     if match:
         clean_code = match.group(1)
@@ -115,7 +118,7 @@ def execute_code_safely(code: str, dfs: Dict[str, pd.DataFrame]) -> Tuple[Any, O
     global_vars: Dict[str, Any] = {
         "pd": pd,
         "np": np,
-        "dfs": dfs,
+        "dfs": safe_dfs,
         "re": re,
         "math": math,
         "datetime": datetime,
@@ -134,11 +137,50 @@ def execute_code_safely(code: str, dfs: Dict[str, pd.DataFrame]) -> Tuple[Any, O
         exec(clean_code, global_vars, local_vars)
         if "solve" not in local_vars:
             return None, "Function 'solve' not defined in generated code"
-        result = local_vars["solve"](dfs)
+        result = local_vars["solve"](safe_dfs)
         return result, None
     except Exception:
         err_msg = traceback.format_exc()
         return None, err_msg
+
+
+def is_empty_or_meaningless(val: Any) -> bool:
+    """Checks whether the execution result is empty, None, NaN, or meaningless."""
+    if val is None or val is pd.NA:
+        return True
+    if isinstance(val, (float, np.floating)) and np.isnan(val):
+        return True
+    if isinstance(val, (list, tuple, set, dict)) and len(val) == 0:
+        return True
+    if isinstance(val, (pd.DataFrame, pd.Series)) and val.empty:
+        return True
+    if isinstance(val, np.ndarray) and val.size == 0:
+        return True
+    s = str(val).strip().lower()
+    if s in ["", "nan", "none", "null", "n/a", "nat", "[]", "{}"]:
+        return True
+    return False
+
+
+def get_column_samples_hint(dfs: Dict[str, pd.DataFrame]) -> str:
+    """Extracts unique sample values from text/categorical columns across sheets to guide LLM reflection."""
+    hints = []
+    for sname, df in dfs.items():
+        if df.empty:
+            continue
+        sheet_hints = []
+        for col in df.columns:
+            series = df[col].dropna()
+            if series.empty:
+                continue
+            sample_vals = [str(x).strip() for x in series.unique() if str(x).strip() not in ["", "nan", "None"]]
+            has_text = any(re.search(r"[a-zA-Z\u00C0-\u1EF9]", str(x)) for x in sample_vals[:10])
+            if has_text and sample_vals:
+                display_vals = sample_vals[:8]
+                sheet_hints.append(f"    - Column '{col}': sample values {display_vals}")
+        if sheet_hints:
+            hints.append(f"  * Sheet '{sname}':\n" + "\n".join(sheet_hints[:6]))
+    return "\n".join(hints) if hints else "No string columns found."
 
 
 def query_llm(
@@ -147,6 +189,7 @@ def query_llm(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     temperature: float = 0.0,
+    max_tokens: int = 300,
 ) -> str:
     """Primary LLM caller.
     
@@ -163,7 +206,7 @@ def query_llm(
             api_key=api_key,
             model_id=model or COMPETITION_MODEL_ID,
         )
-        return client.query(prompt, system_prompt=sys_prompt, temperature=temperature)
+        return client.query(prompt, system_prompt=sys_prompt, temperature=temperature, max_tokens=max_tokens)
 
     # Optional Testing Providers (Groq, Gemini, Ollama)
     headers = {"Content-Type": "application/json"}
@@ -190,11 +233,12 @@ def query_llm(
     payload = {
         "model": target_model,
         "temperature": temperature,
-        "max_tokens": 1000,
+        "max_tokens": max_tokens,
         "messages": [
             {"role": "system", "content": sys_prompt},
             {"role": "user", "content": prompt},
         ],
+        "stop": ["\n```\n", "```\n"],
     }
 
     resp = requests.post(url, headers=headers, json=payload, timeout=60)
