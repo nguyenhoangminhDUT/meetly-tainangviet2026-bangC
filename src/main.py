@@ -97,8 +97,8 @@ def main():
     parser.add_argument("--output", type=str, default="submission.csv", help="Path to write output submission.csv")
 
     # Model and connection settings
-    parser.add_argument("--api_key", type=str, default=None, help="OpenRouter API key (defaults to OPENROUTER_API_KEY env var)")
-    parser.add_argument("--model", type=str, default=COMPETITION_MODEL_ID, help="LLM model identifier")
+    parser.add_argument("--api_key", type=str, default=None, help="API key for selected provider")
+    parser.add_argument("--model", type=str, default=None, help="LLM model identifier (defaults to provider's native model)")
     parser.add_argument("--provider", type=str, default="openrouter", choices=["openrouter", "groq", "gemini", "ollama", "selfhosted"], help="LLM provider")
 
     # Evaluation and logging utilities
@@ -232,6 +232,7 @@ Please fix the error and write a correct python function `def solve(dfs: dict[st
                 correct_count += 1
 
         results.append({"id": q_id, "answer": final_ans})
+        time.sleep(1.0)
 
     # Save output submission.csv
     output_df = pd.DataFrame(results)

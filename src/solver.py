@@ -10,6 +10,7 @@ Orchestrates:
 import os
 import re
 import sys
+import time
 import math
 import datetime
 import itertools
@@ -43,7 +44,7 @@ except ImportError:
 
 # Optional Development Endpoints
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-DEFAULT_GROQ_MODEL = os.getenv("GROQ_MODEL_ID", "llama-3.1-8b-instant")
+DEFAULT_GROQ_MODEL = os.getenv("GROQ_MODEL_ID", "qwen/qwen3.8-27b")
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL_ID", "gemini-1.5-flash")
@@ -209,19 +210,33 @@ def query_llm(
         ],
     }
 
-    resp = requests.post(url, headers=headers, json=payload, timeout=60)
-    resp.raise_for_status()
-    data = resp.json()
+    for attempt in range(6):
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=60)
+            if resp.status_code == 429:
+                retry_after = resp.headers.get("retry-after")
+                reset_s = float(retry_after) if retry_after else (3.0 * (attempt + 1))
+                time.sleep(reset_s)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
 
-    usage = data.get("usage", {})
-    p_tok = usage.get("prompt_tokens", 0)
-    c_tok = usage.get("completion_tokens", 0)
-    TOKEN_STATS["prompt_tokens"] += p_tok
-    TOKEN_STATS["completion_tokens"] += c_tok
-    TOKEN_STATS["total_tokens"] += p_tok + c_tok
-    TOKEN_STATS["call_count"] += 1
+            usage = data.get("usage", {})
+            p_tok = usage.get("prompt_tokens", 0)
+            c_tok = usage.get("completion_tokens", 0)
+            TOKEN_STATS["prompt_tokens"] += p_tok
+            TOKEN_STATS["completion_tokens"] += c_tok
+            TOKEN_STATS["total_tokens"] += p_tok + c_tok
+            TOKEN_STATS["call_count"] += 1
 
-    return data["choices"][0]["message"]["content"]
+            return data["choices"][0]["message"]["content"]
+        except Exception as e:
+            if attempt < 5:
+                time.sleep(2.0 * (attempt + 1))
+            else:
+                raise e
+
+    return ""
 
 
 # Backward-compatible alias

@@ -13,8 +13,10 @@ olympic_text.txt
 vkv_text.txt
 *.tmp
 *.log
-submission.csv
+eval_*.txt
+submission*.csv
 *.zip
+data/data_public_2/
 
 # Environment variables
 .env
