@@ -117,9 +117,9 @@ def main():
     parser.add_argument("--output", "--output_path", "--out", dest="output", type=str, default=None, help="Path to write output submission.csv (default: submission.csv)")
 
     # Model and connection settings
-    parser.add_argument("--api_key", type=str, default=None, help="OpenRouter API key (defaults to OPENROUTER_API_KEY env var)")
-    parser.add_argument("--model", type=str, default=COMPETITION_MODEL_ID, help="LLM model identifier")
-    parser.add_argument("--provider", type=str, default="openrouter", choices=["openrouter", "groq", "gemini", "ollama"], help="LLM provider")
+    parser.add_argument("--api_key", type=str, default=None, help="API key for selected provider")
+    parser.add_argument("--model", type=str, default=None, help="LLM model identifier (defaults to provider's native model)")
+    parser.add_argument("--provider", type=str, default="openrouter", choices=["openrouter", "groq", "gemini", "ollama", "selfhosted"], help="LLM provider")
 
     # High-Performance Concurrency
     parser.add_argument("--workers", type=int, default=4, help="Number of concurrent worker threads for parallel question answering")
@@ -233,7 +233,7 @@ Write a python function `def solve(dfs: dict[str, pd.DataFrame]) -> Any:` to ans
                 "model": args.model,
                 "provider": args.provider,
                 "temperature": 0.0,
-                "max_tokens": 300,
+                "max_tokens": 800,
             }
 
             code = query_llm(prompt, **kwargs)

@@ -41,13 +41,17 @@ def is_title_or_meta_row(row_vals: List[Any], total_cols: int) -> bool:
     if len(set(non_empty)) == 1 and total_cols > 2:
         return True
 
-    # Standard BLS/Census/StatCan/SEC metadata prefixes
+    # Single-cell banner title row on wide tables (long descriptive title before table headers)
+    if len(non_empty) == 1 and total_cols >= 3:
+        if len(non_empty[0]) > 25 and not is_num_cell(non_empty[0]):
+            return True
+
+    # Standard international statistical metadata prefixes (BLS, OECD, StatCan, GSO, Census)
     first_str = non_empty[0].lower()
     meta_prefixes = [
-        'table ', 'table:', 'tableau ', 'household data',
+        'table ', 'table:', 'tableau ', 'bảng ', 'bảng:', 'household data',
         '[numbers in', '[percent', '[in thousands', '[in millions',
         '(dollars in', '(in millions', '(in thousands',
-        'thu nhập tiền lương', '25至54岁'
     ]
     if any(first_str.startswith(k) for k in meta_prefixes):
         return True

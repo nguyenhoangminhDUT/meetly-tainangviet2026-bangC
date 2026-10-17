@@ -10,6 +10,7 @@ Orchestrates:
 import os
 import re
 import sys
+import time
 import math
 import datetime
 import itertools
@@ -43,13 +44,16 @@ except ImportError:
 
 # Optional Development Endpoints
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-DEFAULT_GROQ_MODEL = os.getenv("GROQ_MODEL_ID", "llama-3.1-8b-instant")
+DEFAULT_GROQ_MODEL = os.getenv("GROQ_MODEL_ID", "qwen/qwen3.8-27b")
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL_ID", "gemini-1.5-flash")
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/v1/chat/completions")
 DEFAULT_OLLAMA_MODEL = os.getenv("OLLAMA_MODEL_ID", "qwen2.5-coder:7b")
+
+SELFHOSTED_URL = os.getenv("SELFHOSTED_URL", "https://llm2.dutai.site/v1/chat/completions")
+DEFAULT_SELFHOSTED_MODEL = os.getenv("SELFHOSTED_MODEL_ID", "ggml-org/gemma-4-e4b-it-GGUF:Q4_0")
 
 
 def build_system_prompt() -> str:
@@ -58,35 +62,38 @@ def build_system_prompt() -> str:
 Your task is to write a single Python function `def solve(dfs: dict[str, pd.DataFrame]) -> Any:` that precisely answers the user's question using the provided DataFrames.
 
 CORE PRINCIPLES:
+0. Input Structure:
+   - The argument `dfs` is a dictionary where KEYS ARE WORKSHEET NAMES (e.g. `df = dfs['Sheet1']` or `df = list(dfs.values())[0]`). Keys are NEVER file names or file paths.
+
 1. Multilingual Understanding & Strict Output Compliance:
    - The user query may be in English, Vietnamese, French, Korean, Chinese, or other languages.
    - Answer strictly according to the format asked in the query:
      * If asking for an integer without commas or units -> return int or comma-separated ints as requested.
      * If asking for 1, 2, or 3 decimal places -> return round(val, 1), round(val, 2), or round(val, 3) (or formatted float string).
      * If asking for Yes/No (or in other languages: Có/Không, Oui/Non, 是/否, 예/아니오) -> return 'Yes' or 'No'.
-     * If asking for only the year / fiscal year -> return the 4-digit year as int or string (e.g. 1954, 2013).
+     * If asking for only the year / fiscal year -> return the 4-digit year as int or string (e.g. 2021, 1995).
      * If asking for a ranking or ordered list -> return comma-separated names in the exact order requested.
-     * If asking for a composite output e.g. `group, difference` or `year, decrease` or `table_id, revenue` -> return tuple or string `f"{item1}, {item2}"`.
+     * If asking for a composite output e.g. `group, difference` or `year, decrease` or `item, value` -> return tuple or string `f"{item1}, {item2}"`.
 
 2. Hierarchical Structure, Indent Levels & Substring Matching:
-   - Composite column headers and hierarchical row categories are joined by ' | ' (e.g. 'Main | Subcategory').
-   - Column 0 vs Column 1: If Column 0 is 'Indent Level' (numeric integers 0, 1, 2...), the item/category names are in Column 1 ('Item and group').
+   - Composite column headers and hierarchical row categories are joined by ' | ' (e.g. 'Main Category | Subcategory').
+   - Column 0 vs Column 1: If Column 0 is 'Indent Level' (numeric integers 0, 1, 2...), the item/category names are in Column 1:
      * Indent 0 = top-level, Indent 1 = category, Indent 2 = subcategory.
-     * To find categories directly under a parent category (e.g. directly under 'Housing' with indent 1), look for rows that appear after 'Housing' with indent == parent_indent + 1, stopping before the next item with indent <= parent_indent.
-   - Section headers in Column 0: When tables have demographic/activity sections (e.g. 'Own household children 6-17, none younger | Housework'), match using `str.contains(...)` with `case=False, na=False` or check `pattern.lower() in str(val).lower()`.
+     * To find subcategories directly under a parent category (e.g. parent at Indent Level N), look for consecutive rows appearing after the parent with indent == N + 1, stopping as soon as indent <= N.
+   - Section headers in Column 0: When tables have demographic/activity sections (e.g. 'Section Header | Row Category'), match using `str.contains(...)` with `case=False, na=False` or check `pattern.lower() in str(val).lower()`.
    - Substring Collisions: Remember 'men' is inside 'women', and 'male' is inside 'female'. Always match 'women'/'female' before 'men'/'male', or use word boundaries (r'\bmen\b', r'\bmale\b').
 
 3. Safe Numeric Conversion & Cleaning:
-   - Values in the table may be strings containing commas (e.g. '58,176'), currency ('$851'), percent ('10%'), negatives in parentheses '(1.5)' -> -1.5, or missing markers '..' / '-'.
+   - Values in the table may be strings containing commas (e.g. '1,250'), currency ('$45.0'), percent ('15%'), negatives in parentheses '(1.5)' -> -1.5, or missing markers '..' / '-'.
    - Clean safely in pandas:
      `pd.to_numeric(s.astype(str).str.replace(r'[\$,%]', '', regex=True).str.replace(r'^\((.*?)\)$', r'-\1', regex=True).str.replace(',', '', regex=False), errors='coerce')`
    - In native Python:
      `def to_num(val): s = re.sub(r'[\$,%]', '', str(val)).replace(',', '').strip(); return float('-' + s[1:-1]) if s.startswith('(') and s.endswith(')') else float(s)`
-   - Native Units: Report values in the table's native units as displayed (do not multiply by 1000 unless explicitly requested).
+   - Native Units: Report values in the table's native units as displayed (do not multiply or divide by 1000 unless explicitly requested).
 
 4. Aggregate vs Category Rows:
-   - When finding min/max, ranking, or calculating differences across categories/industries/groups, EXCLUDE summary/Total rows (e.g. 'Total', 'All', 'Average', 'Subtotal', 'All industries').
-   - When asked for the overall total/sum across all groups or categories, if an aggregate row already exists (e.g. 'Total', 'Total, all activities', 'Total, 16 years and over'), retrieve it directly to avoid double-counting.
+   - When finding min/max, ranking, or calculating differences across categories/industries/groups, EXCLUDE summary/Total rows (e.g. 'Total', 'All', 'Average', 'Subtotal', 'Overall').
+   - When asked for the overall total/sum across all groups or categories, if an aggregate row already exists (e.g. 'Total', 'All activities', 'Overall total'), retrieve it directly to avoid double-counting.
 
 5. Temporal & Age Reasoning:
    - When identifying oldest/youngest entities or calculating age, if both a Birth Date and an Admission/Event Date exist, age is elapsed duration: `(pd.to_datetime(event_date) - pd.to_datetime(birth_date)).dt.days`.
@@ -227,6 +234,12 @@ def query_llm(
     elif target_provider == "ollama":
         url = OLLAMA_URL
         target_model = model or DEFAULT_OLLAMA_MODEL
+    elif target_provider == "selfhosted":
+        url = SELFHOSTED_URL
+        target_model = model or DEFAULT_SELFHOSTED_MODEL
+        key = api_key or os.getenv("SELFHOSTED_API_KEY", "")
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
     else:
         raise ValueError(f"Unsupported provider: {target_provider}")
 
@@ -241,19 +254,33 @@ def query_llm(
         "stop": ["\n```\n", "```\n"],
     }
 
-    resp = requests.post(url, headers=headers, json=payload, timeout=60)
-    resp.raise_for_status()
-    data = resp.json()
+    for attempt in range(6):
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=60)
+            if resp.status_code == 429:
+                retry_after = resp.headers.get("retry-after")
+                reset_s = float(retry_after) if retry_after else (3.0 * (attempt + 1))
+                time.sleep(reset_s)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
 
-    usage = data.get("usage", {})
-    p_tok = usage.get("prompt_tokens", 0)
-    c_tok = usage.get("completion_tokens", 0)
-    TOKEN_STATS["prompt_tokens"] += p_tok
-    TOKEN_STATS["completion_tokens"] += c_tok
-    TOKEN_STATS["total_tokens"] += p_tok + c_tok
-    TOKEN_STATS["call_count"] += 1
+            usage = data.get("usage", {})
+            p_tok = usage.get("prompt_tokens", 0)
+            c_tok = usage.get("completion_tokens", 0)
+            TOKEN_STATS["prompt_tokens"] += p_tok
+            TOKEN_STATS["completion_tokens"] += c_tok
+            TOKEN_STATS["total_tokens"] += p_tok + c_tok
+            TOKEN_STATS["call_count"] += 1
 
-    return data["choices"][0]["message"]["content"]
+            return data["choices"][0]["message"]["content"]
+        except Exception as e:
+            if attempt < 5:
+                time.sleep(2.0 * (attempt + 1))
+            else:
+                raise e
+
+    return ""
 
 
 # Backward-compatible alias
