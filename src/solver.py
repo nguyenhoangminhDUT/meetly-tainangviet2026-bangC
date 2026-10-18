@@ -34,13 +34,16 @@ try:
         TOKEN_STATS,
         get_token_usage_report,
     )
-except ImportError:
-    from llm_client import (
-        CompetitionLLMClient,
-        COMPETITION_MODEL_ID,
-        TOKEN_STATS,
-        get_token_usage_report,
-    )
+except ModuleNotFoundError as e:
+    if e.name in ("src", "src.llm_client"):
+        from llm_client import (
+            CompetitionLLMClient,
+            COMPETITION_MODEL_ID,
+            TOKEN_STATS,
+            get_token_usage_report,
+        )
+    else:
+        raise
 
 # Optional Development Endpoints
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"

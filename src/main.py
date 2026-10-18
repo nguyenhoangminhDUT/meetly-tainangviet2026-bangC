@@ -42,13 +42,16 @@ try:
     from src.solver import query_llm, execute_code_safely, is_empty_or_meaningless, get_column_samples_hint
     from src.llm_client import COMPETITION_MODEL_ID, TOKEN_STATS, get_token_usage_report
     from src.evaluator import compute_metrics_from_maps
-except ImportError:
-    from normalizer import load_normalized_workbook
-    from sanitizer import sanitize_answer
-    from schema_builder import build_schema_summary
-    from solver import query_llm, execute_code_safely, is_empty_or_meaningless, get_column_samples_hint
-    from llm_client import COMPETITION_MODEL_ID, TOKEN_STATS, get_token_usage_report
-    from evaluator import compute_metrics_from_maps
+except ModuleNotFoundError as e:
+    if e.name in ("src", "src.normalizer", "src.sanitizer", "src.schema_builder", "src.solver", "src.llm_client", "src.evaluator"):
+        from normalizer import load_normalized_workbook
+        from sanitizer import sanitize_answer
+        from schema_builder import build_schema_summary
+        from solver import query_llm, execute_code_safely, is_empty_or_meaningless, get_column_samples_hint
+        from llm_client import COMPETITION_MODEL_ID, TOKEN_STATS, get_token_usage_report
+        from evaluator import compute_metrics_from_maps
+    else:
+        raise
 
 
 class OutputLogger:
